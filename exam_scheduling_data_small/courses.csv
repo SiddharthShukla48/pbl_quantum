@@ -1,0 +1,11 @@
+course_id,course_code,course_name,enrollment,duration_hours,room_type_requirement,instructor_faculty_id
+0,CS101,CS101 - Course 0,127,1,computer_lab,6
+1,CS102,CS102 - Course 1,48,1,regular,0
+2,CS201,CS201 - Course 2,74,1,regular,6
+3,CS202,CS202 - Course 3,78,1,regular,7
+4,CS301,CS301 - Course 4,73,1,regular,4
+5,MATH101,MATH101 - Course 5,102,1,regular,3
+6,MATH102,MATH102 - Course 6,66,1,computer_lab,2
+7,PHYS101,PHYS101 - Course 7,51,1,regular,7
+8,CHEM101,CHEM101 - Course 8,75,1,computer_lab,7
+9,BIO101,BIO101 - Course 9,23,1,regular,5

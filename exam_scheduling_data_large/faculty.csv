@@ -1,0 +1,31 @@
+faculty_id,faculty_name,rank,department,email,invigilator_quota
+0,Professor00,Professor,Department_X,professor0@university.edu,3
+1,Professor01,Professor,Department_X,professor1@university.edu,3
+2,Professor02,Professor,Department_X,professor2@university.edu,3
+3,Professor03,Professor,Department_X,professor3@university.edu,3
+4,Professor04,Professor,Department_X,professor4@university.edu,3
+5,Associate_Professor00,Associate Professor,Department_X,associateprofessor0@university.edu,4
+6,Associate_Professor01,Associate Professor,Department_X,associateprofessor1@university.edu,4
+7,Associate_Professor02,Associate Professor,Department_X,associateprofessor2@university.edu,4
+8,Associate_Professor03,Associate Professor,Department_X,associateprofessor3@university.edu,4
+9,Associate_Professor04,Associate Professor,Department_X,associateprofessor4@university.edu,4
+10,Associate_Professor05,Associate Professor,Department_X,associateprofessor5@university.edu,4
+11,Associate_Professor06,Associate Professor,Department_X,associateprofessor6@university.edu,4
+12,Associate_Professor07,Associate Professor,Department_X,associateprofessor7@university.edu,4
+13,Associate_Professor08,Associate Professor,Department_X,associateprofessor8@university.edu,4
+14,Associate_Professor09,Associate Professor,Department_X,associateprofessor9@university.edu,4
+15,Assistant_Professor00,Assistant Professor,Department_X,assistantprofessor0@university.edu,5
+16,Assistant_Professor01,Assistant Professor,Department_X,assistantprofessor1@university.edu,5
+17,Assistant_Professor02,Assistant Professor,Department_X,assistantprofessor2@university.edu,5
+18,Assistant_Professor03,Assistant Professor,Department_X,assistantprofessor3@university.edu,5
+19,Assistant_Professor04,Assistant Professor,Department_X,assistantprofessor4@university.edu,5
+20,Assistant_Professor05,Assistant Professor,Department_X,assistantprofessor5@university.edu,5
+21,Assistant_Professor06,Assistant Professor,Department_X,assistantprofessor6@university.edu,5
+22,Assistant_Professor07,Assistant Professor,Department_X,assistantprofessor7@university.edu,5
+23,Assistant_Professor08,Assistant Professor,Department_X,assistantprofessor8@university.edu,5
+24,Assistant_Professor09,Assistant Professor,Department_X,assistantprofessor9@university.edu,5
+25,Assistant_Professor10,Assistant Professor,Department_X,assistantprofessor10@university.edu,5
+26,Assistant_Professor11,Assistant Professor,Department_X,assistantprofessor11@university.edu,5
+27,Assistant_Professor12,Assistant Professor,Department_X,assistantprofessor12@university.edu,5
+28,Assistant_Professor13,Assistant Professor,Department_X,assistantprofessor13@university.edu,5
+29,Assistant_Professor14,Assistant Professor,Department_X,assistantprofessor14@university.edu,5

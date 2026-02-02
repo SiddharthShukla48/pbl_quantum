@@ -1,0 +1,10 @@
+{
+  "num_courses": 20,
+  "num_students": 250,
+  "num_rooms": 10,
+  "num_faculty": 15,
+  "num_days": 5,
+  "num_timeslots": 2,
+  "total_timeslots": 10,
+  "generated_at": "2026-02-02T22:44:11.472670"
+}

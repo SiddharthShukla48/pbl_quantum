@@ -1,0 +1,11 @@
+room_id,room_number,capacity,room_type,building,floor
+0,ROOM00,100,regular,Building_A,1
+1,ROOM01,30,regular,Building_A,2
+2,ROOM02,30,regular,Building_A,3
+3,ROOM03,40,computer_lab,Building_B,1
+4,ROOM04,40,computer_lab,Building_B,2
+5,ROOM05,30,regular,Building_B,3
+6,ROOM06,30,regular,Building_C,1
+7,ROOM07,30,regular,Building_C,2
+8,ROOM08,100,regular,Building_C,3
+9,ROOM09,30,regular,Building_D,1

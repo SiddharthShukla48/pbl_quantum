@@ -1,0 +1,23 @@
+# D-Wave Ocean SDK Requirements for Exam Scheduling QUBO
+# Install with: pip install -r requirements.txt
+
+# Core D-Wave Ocean SDK
+dwave-ocean-sdk>=6.0.0
+
+# Individual components (installed by ocean-sdk, but listed for reference):
+# - dimod: QUBO and BQM formulation
+# - dwave-system: D-Wave QPU hardware access
+# - dwave-neal: Simulated annealing solver (classical)
+# - dwave-hybrid: Hybrid quantum-classical solver
+# - dwave-cloud-client: Cloud API access
+
+# Data processing
+numpy>=1.21.0
+pandas>=1.3.0
+
+# Optional: For visualization and analysis
+matplotlib>=3.4.0
+seaborn>=0.11.0
+
+# Optional: Classical baseline comparison
+# ortools>=9.4.0  # Google OR-Tools for constraint programming

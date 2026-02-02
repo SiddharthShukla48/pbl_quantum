@@ -1,0 +1,5 @@
+faculty_id,faculty_name,rank,department,email,invigilator_quota
+0,Professor00,Professor,Department_X,professor0@university.edu,3
+1,Associate_Professor00,Associate Professor,Department_X,associateprofessor0@university.edu,4
+2,Assistant_Professor00,Assistant Professor,Department_X,assistantprofessor0@university.edu,5
+3,Assistant_Professor01,Assistant Professor,Department_X,assistantprofessor1@university.edu,5
