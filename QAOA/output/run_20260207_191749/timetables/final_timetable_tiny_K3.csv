@@ -1,0 +1,6 @@
+Slot,Course,Year,Enrollment,Room,Room_Capacity,Utilization
+0,MATH201,3,26,Room_01,30,86.7%
+0,PHYS201,2,78,Room_00,90,86.7%
+1,CS202,3,34,Room_00,90,37.8%
+1,CS203,2,27,Room_00,90,30.0%
+2,CS201,2,66,Room_00,90,73.3%
