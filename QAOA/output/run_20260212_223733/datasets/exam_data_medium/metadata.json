@@ -1,0 +1,8 @@
+{
+  "num_courses": 15,
+  "num_students": 80,
+  "num_rooms": 7,
+  "num_enrollments": 303,
+  "num_conflicts": 49,
+  "avg_courses_per_student": 4
+}

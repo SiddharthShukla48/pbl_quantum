@@ -77,13 +77,15 @@ def visualize_conflict_graph(adjacency_matrix, courses_df, title="Exam Conflict 
     
     n = len(adj)
     
-    # Add nodes with course names
+    # Add nodes with course names AND YEAR
     for i in range(n):
         course_code = courses_df.iloc[i]['course_code']
         enrollment = courses_df.iloc[i]['enrollment']
+        year = courses_df.iloc[i]['year']  # ← ADD YEAR
         G.add_node(i, 
                   label=course_code,
-                  enrollment=enrollment)
+                  enrollment=enrollment,
+                  year=year)  # ← STORE YEAR
     
     # Add edges where conflicts exist
     for i in range(n):
@@ -92,30 +94,38 @@ def visualize_conflict_graph(adjacency_matrix, courses_df, title="Exam Conflict 
                 G.add_edge(i, j, weight=adj[i, j])
     
     # Calculate layout
-    # Use spring layout for nice visualization
     pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
     
     # Create figure
     plt.figure(figsize=(14, 10))
     
-    # Draw nodes
+    # CREATE COLOR MAP BASED ON YEAR ← FIX HERE
+    node_colors = []
+    for i in G.nodes():
+        year = G.nodes[i]['year']
+        if year == 2:
+            node_colors.append('#3498db')  # Blue for 2nd year
+        elif year == 3:
+            node_colors.append('#2ecc71')  # Green for 3rd year
+        else:
+            node_colors.append('#e74c3c')  # Red for other years (just in case)
+    
     # Node size proportional to enrollment
     node_sizes = [G.nodes[i]['enrollment'] * 20 for i in G.nodes()]
     
+    # Draw nodes with YEAR-BASED COLORS
     nx.draw_networkx_nodes(G, pos,
-                          node_color='lightblue',
+                          node_color=node_colors,  # ← USE YEAR COLORS
                           node_size=node_sizes,
                           alpha=0.9,
                           edgecolors='black',
                           linewidths=2)
     
     # Draw edges
-    # Edge width proportional to number of conflicts
     edges = G.edges()
     weights = [G[u][v]['weight'] for u, v in edges]
     max_weight = max(weights) if weights else 1
     
-    # Normalize weights for visualization
     edge_widths = [2 + 4 * (w / max_weight) for w in weights]
     
     nx.draw_networkx_edges(G, pos,
@@ -130,7 +140,7 @@ def visualize_conflict_graph(adjacency_matrix, courses_df, title="Exam Conflict 
                            font_size=10,
                            font_weight='bold')
     
-    # Add edge labels (conflict counts) - only for edges with high conflicts
+    # Add edge labels (conflict counts)
     edge_labels = {(u, v): f"{G[u][v]['weight']}" 
                    for u, v in G.edges() if G[u][v]['weight'] >= 5}
     
@@ -138,6 +148,14 @@ def visualize_conflict_graph(adjacency_matrix, courses_df, title="Exam Conflict 
                                  edge_labels,
                                  font_size=8,
                                  font_color='red')
+    
+    # ADD LEGEND TO SHOW YEAR COLORS
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#3498db', edgecolor='black', label='2nd Year'),
+        Patch(facecolor='#2ecc71', edgecolor='black', label='3rd Year')
+    ]
+    plt.legend(handles=legend_elements, loc='upper right', fontsize=12)
     
     plt.title(title, fontsize=16, fontweight='bold')
     plt.axis('off')
