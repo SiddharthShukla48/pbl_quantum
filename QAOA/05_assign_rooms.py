@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import json
+import sys
 
 
 def get_latest_run_dir(output_base='./output'):
@@ -229,6 +230,21 @@ def main():
     print("ROOM ASSIGNMENT FOR EXAM TIMETABLING")
     print("="*60)
     
+    # Parse command-line arguments
+    if len(sys.argv) > 1:
+        dataset = sys.argv[1].lower()
+    else:
+        dataset = 'tiny'
+    
+    if len(sys.argv) > 2:
+        K = int(sys.argv[2])
+    else:
+        K_defaults = {'tiny': 3, 'small': 4, 'medium': 5}
+        K = K_defaults.get(dataset, 3)
+    
+    print(f"\n📊 Dataset: {dataset.upper()}")
+    print(f"🎨 Colors (K): {K}\n")
+    
     # Get latest run directory
     run_dir = get_latest_run_dir()
     if run_dir is None:
@@ -243,17 +259,13 @@ def main():
     print(f"\n📁 Using run directory: {run_dir}")
     print(f"📁 Timetables will be saved to: {timetables_dir}\n")
     
-    # Configuration
-    dataset = 'tiny'
-    K = 3
-    
+    # Load data
     data_dir = datasets_dir / f'exam_data_{dataset}'
     
     if not data_dir.exists():
         print(f"\n⚠ Error: {data_dir} not found!")
         return
     
-    # Load data
     courses_df = pd.read_csv(data_dir / 'courses.csv')
     rooms_df = pd.read_csv(data_dir / 'rooms.csv')
     

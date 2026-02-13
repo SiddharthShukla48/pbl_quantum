@@ -1,0 +1,11 @@
+course_id,course_code,year,enrollment,duration_hours
+0,CS201,2,66,3
+1,CS202,3,34,2
+2,CS203,2,27,2
+3,MATH201,3,26,3
+4,PHYS201,2,78,2
+5,EE201,3,30,2
+6,CHEM201,2,23,3
+7,BIO201,3,22,3
+8,CS301,2,61,3
+9,CS302,3,31,3

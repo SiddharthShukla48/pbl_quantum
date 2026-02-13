@@ -25,6 +25,7 @@ import pandas as pd
 from pathlib import Path
 import json
 import matplotlib.pyplot as plt
+import sys
 
 # Qiskit imports (Compatible with both old and new versions)
 from qiskit_optimization import QuadraticProgram
@@ -365,6 +366,22 @@ def main():
     print("QAOA SOLVER FOR EXAM SCHEDULING")
     print("="*60)
     
+    # Parse command-line arguments
+    if len(sys.argv) > 1:
+        dataset = sys.argv[1].lower()
+    else:
+        dataset = 'tiny'  # Default
+    
+    if len(sys.argv) > 2:
+        K = int(sys.argv[2])
+    else:
+        # Recommended K values
+        K_defaults = {'tiny': 3, 'small': 4, 'medium': 5}
+        K = K_defaults.get(dataset, 3)
+    
+    print(f"\n📊 Dataset: {dataset.upper()}")
+    print(f"🎨 Colors (K): {K}\n")
+    
     # Get latest run directory
     run_dir = get_latest_run_dir()
     if run_dir is None:
@@ -380,23 +397,9 @@ def main():
     print(f"\n📁 Using run directory: {run_dir}")
     print(f"📁 Solutions will be saved to: {solutions_dir}\n")
     
-    # Choose dataset
-    dataset = 'tiny'  # Start with TINY for testing
-    K = 3  # Number of colors
-    
-    data_dir = datasets_dir / f'exam_data_{dataset}'
-    
-    if not data_dir.exists():
-        print(f"\n⚠ Error: {data_dir} not found!")
-        print("Run 01_generate_dataset.py and 03_build_qubo.py first.")
-        return
-    
-    print(f"\nDataset: {dataset.upper()}")
-    print(f"Colors: {K}")
-    
     # Load QUBO
     print("\nLoading QUBO...")
-    Q, metadata, courses, adjacency = load_qubo(data_dir, K)
+    Q, metadata, courses, adjacency = load_qubo(datasets_dir / f'exam_data_{dataset}', K)
     print(f"✓ Loaded QUBO: {Q.shape}")
     
     # Convert to QuadraticProgram

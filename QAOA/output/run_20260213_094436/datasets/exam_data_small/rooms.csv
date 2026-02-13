@@ -1,0 +1,6 @@
+room_id,room_name,capacity,room_type,building
+0,Room_00,90,Lecture_Hall,Main
+1,Room_01,30,Classroom,Main
+2,Room_02,30,Classroom,Main
+3,Room_03,30,Classroom,CS_Block
+4,Room_04,30,Classroom,CS_Block
