@@ -223,9 +223,9 @@ def print_timetable_pretty(timetable):
 
 
 def main():
-    """
-    Main room assignment workflow
-    """
+    """Main room assignment workflow"""
+    import sys
+    
     print("="*60)
     print("ROOM ASSIGNMENT FOR EXAM TIMETABLING")
     print("="*60)

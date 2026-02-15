@@ -1,0 +1,3 @@
+dataset,K,backend,run_id,status,is_valid,runtime_solver,runtime_wall,energy,num_conflicts,num_variables,colors_used
+tiny,2,neal,0,success,False,0.11354684829711914,2.2675111293792725,-45000.0,1,10,2
+tiny,3,neal,0,success,True,0.24145889282226562,1.6671760082244873,-50000.0,0,15,3

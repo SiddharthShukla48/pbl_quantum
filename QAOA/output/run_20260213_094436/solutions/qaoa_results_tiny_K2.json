@@ -1,0 +1,23 @@
+{
+  "dataset": "tiny",
+  "K": 2,
+  "backend": "qaoa",
+  "num_variables": 10,
+  "num_exams": 5,
+  "runtime_seconds": 1.1956121921539307,
+  "energy": -40000.0,
+  "is_valid": false,
+  "num_conflicts": 0,
+  "colors_used": 2,
+  "coloring": {
+    "0": 1,
+    "1": 1,
+    "2": 0,
+    "3": 0
+  },
+  "backend_params": {
+    "reps": 2,
+    "num_reads": null,
+    "annealing_time": null
+  }
+}

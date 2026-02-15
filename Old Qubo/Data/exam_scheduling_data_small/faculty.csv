@@ -1,9 +1,0 @@
-faculty_id,faculty_name,rank,department,email,invigilator_quota
-0,Professor00,Professor,Department_X,professor0@university.edu,3
-1,Associate_Professor00,Associate Professor,Department_X,associateprofessor0@university.edu,4
-2,Associate_Professor01,Associate Professor,Department_X,associateprofessor1@university.edu,4
-3,Assistant_Professor00,Assistant Professor,Department_X,assistantprofessor0@university.edu,5
-4,Assistant_Professor01,Assistant Professor,Department_X,assistantprofessor1@university.edu,5
-5,Assistant_Professor02,Assistant Professor,Department_X,assistantprofessor2@university.edu,5
-6,Assistant_Professor03,Assistant Professor,Department_X,assistantprofessor3@university.edu,5
-7,Assistant_Professor04,Assistant Professor,Department_X,assistantprofessor4@university.edu,5
