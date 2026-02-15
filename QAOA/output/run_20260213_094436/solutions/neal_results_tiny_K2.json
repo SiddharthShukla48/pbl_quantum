@@ -4,21 +4,17 @@
   "backend": "neal",
   "num_variables": 10,
   "num_exams": 5,
-  "runtime_seconds": 0.10741496086120605,
+  "runtime_seconds": 0.07996702194213867,
   "energy": -45000.0,
   "is_valid": false,
   "num_conflicts": 1,
   "colors_used": 2,
+  "timeout_exceeded": false,
   "coloring": {
     "0": 0,
     "1": 0,
-    "2": 1,
+    "2": 0,
     "3": 1,
-    "4": 0
-  },
-  "backend_params": {
-    "reps": null,
-    "num_reads": 1000,
-    "annealing_time": null
+    "4": 1
   }
 }
