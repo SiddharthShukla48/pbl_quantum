@@ -577,8 +577,8 @@ def assign_rooms(coloring, courses, metadata, data_dir):
             schedule[slot] = []
         schedule[slot].append({
             'exam_id': exam_id,
-            'course': courses.iloc[exam_id]['course_name'],
-            'students': courses.iloc[exam_id]['num_students']
+            'course': courses.iloc[exam_id]['course_code'],
+            'students': courses.iloc[exam_id]['enrollment']
         })
     
     # Assign rooms (greedy)
@@ -609,6 +609,106 @@ def assign_rooms(coloring, courses, metadata, data_dir):
     print(f"Average utilization: {assignments_df['utilization'].mean():.1%}")
     
     return assignments_df
+
+
+# ============================================================================
+# TIMETABLE GENERATION
+# ============================================================================
+
+def generate_timetable(coloring, courses, rooms_assignments, metadata, data_dir):
+    """
+    Generate human-readable timetable
+    
+    Args:
+        coloring: dict {exam_id: time_slot}
+        courses: DataFrame with course information
+        rooms_assignments: DataFrame with room assignments (or None)
+        metadata: QUBO metadata
+        data_dir: Path to dataset directory
+        
+    Returns:
+        DataFrame: Full timetable
+    """
+    print("\n" + "="*60)
+    print("GENERATING TIMETABLE")
+    print("="*60)
+    
+    # Group exams by time slot
+    schedule = {}
+    for exam_id, slot in coloring.items():
+        if slot not in schedule:
+            schedule[slot] = []
+        
+        course_info = courses.iloc[exam_id]
+        
+        exam_entry = {
+            'time_slot': slot,
+            'exam_id': exam_id,
+            'course_code': course_info['course_code'],
+            'year': course_info['year'],
+            'enrollment': course_info['enrollment'],
+            'room': None,
+            'room_capacity': None
+        }
+        
+        # Add room info if available
+        if rooms_assignments is not None:
+            room_info = rooms_assignments[rooms_assignments['exam_id'] == exam_id]
+            if len(room_info) > 0:
+                exam_entry['room'] = room_info.iloc[0]['room']
+                exam_entry['room_capacity'] = room_info.iloc[0]['capacity']
+        
+        schedule[slot].append(exam_entry)
+    
+    # Create timetable DataFrame
+    timetable_rows = []
+    for slot in sorted(schedule.keys()):
+        for exam in sorted(schedule[slot], key=lambda x: x['course_code']):
+            timetable_rows.append(exam)
+    
+    timetable_df = pd.DataFrame(timetable_rows)
+    
+    print(f"\n✓ Generated timetable with {len(timetable_df)} exams")
+    print(f"✓ Time slots used: {len(schedule)}/{metadata['num_colors']}")
+    
+    # Print summary by slot
+    print("\nSchedule Summary:")
+    print("-" * 60)
+    for slot in sorted(schedule.keys()):
+        exams_in_slot = schedule[slot]
+        total_students = sum(e['enrollment'] for e in exams_in_slot)
+        print(f"  Slot {slot}: {len(exams_in_slot)} exams, {total_students} students")
+    
+    return timetable_df
+
+
+def print_timetable(timetable_df):
+    """Pretty print timetable to console"""
+    
+    print("\n" + "="*60)
+    print("FINAL EXAM TIMETABLE")
+    print("="*60)
+    
+    # Group by time slot
+    for slot in sorted(timetable_df['time_slot'].unique()):
+        slot_exams = timetable_df[timetable_df['time_slot'] == slot]
+        
+        print(f"\n{'='*60}")
+        print(f"TIME SLOT {slot}")
+        print(f"{'='*60}")
+        
+        for _, exam in slot_exams.iterrows():
+            print(f"\n  {exam['course_code']:10s}")
+            print(f"  Year {exam['year']} | {exam['enrollment']} students")
+            
+            if pd.notna(exam['room']):
+                utilization = (exam['enrollment'] / exam['room_capacity']) * 100
+                print(f"  Room: {exam['room']} (Capacity: {exam['room_capacity']}, "
+                      f"Utilization: {utilization:.1f}%)")
+            else:
+                print(f"  Room: Not assigned")
+    
+    print("\n" + "="*60)
 
 
 # ============================================================================
@@ -697,12 +797,45 @@ def solve_single(dataset, K, backend, args):
     
     print(f"\n✓ Saved results to {results_file}")
     
+    # ========== NEW: Generate and save timetable ==========
+    
     # Room assignment
+    rooms_assignments = None
     if args.assign_rooms and is_valid:
-        assignments = assign_rooms(coloring, courses, metadata, data_dir)
+        rooms_assignments = assign_rooms(coloring, courses, metadata, data_dir)
         assignments_file = solutions_dir / f'room_assignments_{dataset}_K{K}_{backend}.csv'
-        assignments.to_csv(assignments_file, index=False)
+        rooms_assignments.to_csv(assignments_file, index=False)
         print(f"✓ Saved room assignments to {assignments_file}")
+    
+    # Generate timetable (always, not just when valid)
+    if is_valid:  # Only generate timetable for valid solutions
+        timetable = generate_timetable(coloring, courses, rooms_assignments, metadata, data_dir)
+        
+        # Save to CSV
+        timetables_dir = run_dir / 'timetables'
+        timetables_dir.mkdir(exist_ok=True)
+        timetable_file = timetables_dir / f'timetable_{dataset}_K{K}_{backend}.csv'
+        timetable.to_csv(timetable_file, index=False)
+        print(f"✓ Saved timetable to {timetable_file}")
+        
+        # Save human-readable text version
+        timetable_txt_file = timetables_dir / f'timetable_{dataset}_K{K}_{backend}.txt'
+        with open(timetable_txt_file, 'w') as f:
+            # Redirect print to file
+            import sys
+            old_stdout = sys.stdout
+            sys.stdout = f
+            
+            print_timetable(timetable)
+            
+            sys.stdout = old_stdout
+        
+        print(f"✓ Saved readable timetable to {timetable_txt_file}")
+        
+        # Print to console
+        print_timetable(timetable)
+    
+    # ========== End of new code ==========
     
     return result_data
 

@@ -1,0 +1,6 @@
+time_slot,exam_id,course_code,year,enrollment,room,room_capacity
+0,0,CS201,2,66,,
+1,1,CS202,3,34,,
+2,3,MATH201,3,26,,
+2,4,PHYS201,2,78,,
+3,2,CS203,2,27,,

@@ -323,16 +323,16 @@ def main():
     datasets_dir = run_dir / 'datasets'
     print(f"\n📁 Using run directory: {run_dir}\n")
     
-    # Dataset configurations
+    # Dataset configurations - generate multiple K values for each dataset
     configs = [
-        {'size': 'tiny', 'K': 3},   # Try 3 colors for tiny
-        {'size': 'small', 'K': 4},  # Try 4 colors for small
-        {'size': 'medium', 'K': 5}, # Try 5 colors for medium
+        {'size': 'tiny', 'K_range': range(2, 5)},    # K=2,3,4 for tiny
+        {'size': 'small', 'K_range': range(3, 6)},   # K=3,4,5 for small
+        {'size': 'medium', 'K_range': range(4, 7)},  # K=4,5,6 for medium
     ]
     
     for config in configs:
         size = config['size']
-        K = config['K']
+        K_range = config['K_range']
         
         data_dir = datasets_dir / f'exam_data_{size}'
         
@@ -340,46 +340,53 @@ def main():
             print(f"\n⚠ {data_dir} not found. Skipping.")
             continue
         
-        print(f"\n{'#'*60}")
-        print(f"# Processing {size.upper()} dataset with K={K} colors")
-        print(f"{'#'*60}")
-        
-        # Load data
+        # Load data once per dataset
         data = load_data(data_dir)
         
-        # Build QUBO
-        builder = GraphColoringQUBO(
-            adjacency_matrix=data['conflict_adjacency'],
-            num_colors=K,
-            lambda1=10000,
-            lambda2=5000
-        )
-        
-        Q = builder.build_full_qubo()
-        
-        # Save QUBO matrix
-        output_path = Path(data_dir)
-        np.save(output_path / f'qubo_matrix_K{K}.npy', Q)
-        print(f"\n✓ Saved QUBO matrix to {data_dir}/qubo_matrix_K{K}.npy")
-        
-        # Save builder metadata
-        metadata = {
-            'num_exams': builder.n,
-            'num_colors': builder.K,
-            'num_variables': builder.num_vars,
-            'lambda1': builder.lambda1,
-            'lambda2': builder.lambda2,
-            'qubo_shape': list(Q.shape)
-        }
-        
-        with open(output_path / f'qubo_metadata_K{K}.json', 'w') as f:
-            json.dump(metadata, f, indent=2)
-        
-        print(f"✓ Saved metadata to {data_dir}/qubo_metadata_K{K}.json")
+        # Generate QUBO for each K value
+        for K in K_range:
+            print(f"\n{'#'*60}")
+            print(f"# Processing {size.upper()} dataset with K={K} colors")
+            print(f"{'#'*60}")
+            
+            # Build QUBO
+            builder = GraphColoringQUBO(
+                adjacency_matrix=data['conflict_adjacency'],
+                num_colors=K,
+                lambda1=10000,
+                lambda2=5000
+            )
+            
+            Q = builder.build_full_qubo()
+            
+            # Save QUBO matrix
+            output_path = Path(data_dir)
+            np.save(output_path / f'qubo_matrix_K{K}.npy', Q)
+            print(f"\n✓ Saved QUBO matrix to {data_dir}/qubo_matrix_K{K}.npy")
+            
+            # Save builder metadata
+            metadata = {
+                'num_exams': builder.n,
+                'num_colors': builder.K,
+                'num_variables': builder.num_vars,
+                'lambda1': builder.lambda1,
+                'lambda2': builder.lambda2,
+                'qubo_shape': list(Q.shape)
+            }
+            
+            with open(output_path / f'qubo_metadata_K{K}.json', 'w') as f:
+                json.dump(metadata, f, indent=2)
+            
+            print(f"✓ Saved metadata to {data_dir}/qubo_metadata_K{K}.json")
     
     print("\n" + "="*60)
     print("QUBO BUILDING COMPLETE!")
-    print("Next step: Run 04_solve_qaoa.py")
+    print("="*60)
+    print(f"Generated QUBO matrices:")
+    print(f"  - tiny:   K=2, 3, 4")
+    print(f"  - small:  K=3, 4, 5")
+    print(f"  - medium: K=4, 5, 6")
+    print(f"\nNext step: Run 04_unified_solver.py --benchmark")
     print("="*60)
 
 

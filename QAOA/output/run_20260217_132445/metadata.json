@@ -1,0 +1,7 @@
+{
+  "num_courses": 10,
+  "num_students": 100,
+  "num_enrollments": 344,
+  "num_conflicts": 18,
+  "min_k_estimate": 7
+}

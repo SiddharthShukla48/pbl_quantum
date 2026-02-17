@@ -1,0 +1,11 @@
+{
+  "num_exams": 10,
+  "num_colors": 5,
+  "num_variables": 50,
+  "lambda1": 10000,
+  "lambda2": 5000,
+  "qubo_shape": [
+    50,
+    50
+  ]
+}

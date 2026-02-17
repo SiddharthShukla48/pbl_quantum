@@ -4,7 +4,7 @@
   "backend": "qaoa",
   "num_variables": 10,
   "num_exams": 5,
-  "runtime_seconds": 1.2421929836273193,
+  "runtime_seconds": 1.248621940612793,
   "energy": -40000.0,
   "is_valid": false,
   "num_conflicts": 0,

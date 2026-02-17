@@ -1,0 +1,22 @@
+{
+  "backend": "neal",
+  "num_courses": 8,
+  "num_students": 40,
+  "k": 4,
+  "avg_courses_per_student": 4,
+  "runtime_seconds": 0.34491705894470215,
+  "energy": -70000.0,
+  "is_valid": false,
+  "num_conflicts": 2,
+  "colors_used": 4,
+  "coloring": {
+    "0": 2,
+    "1": 0,
+    "2": 3,
+    "3": 0,
+    "4": 2,
+    "5": 1,
+    "6": 0,
+    "7": 1
+  }
+}

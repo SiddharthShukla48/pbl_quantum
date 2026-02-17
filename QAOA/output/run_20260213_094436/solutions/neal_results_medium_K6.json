@@ -1,0 +1,30 @@
+{
+  "dataset": "medium",
+  "K": 6,
+  "backend": "neal",
+  "num_variables": 90,
+  "num_exams": 15,
+  "runtime_seconds": 0.981482982635498,
+  "energy": -135000.0,
+  "is_valid": false,
+  "num_conflicts": 3,
+  "colors_used": 6,
+  "timeout_exceeded": false,
+  "coloring": {
+    "0": 3,
+    "1": 3,
+    "2": 0,
+    "3": 3,
+    "4": 0,
+    "5": 4,
+    "6": 5,
+    "7": 2,
+    "8": 2,
+    "9": 1,
+    "10": 2,
+    "11": 0,
+    "12": 4,
+    "13": 5,
+    "14": 1
+  }
+}

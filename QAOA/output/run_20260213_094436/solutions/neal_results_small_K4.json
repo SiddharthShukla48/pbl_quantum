@@ -1,0 +1,25 @@
+{
+  "dataset": "small",
+  "K": 4,
+  "backend": "neal",
+  "num_variables": 40,
+  "num_exams": 10,
+  "runtime_seconds": 0.410491943359375,
+  "energy": -90000.0,
+  "is_valid": false,
+  "num_conflicts": 2,
+  "colors_used": 4,
+  "timeout_exceeded": false,
+  "coloring": {
+    "0": 1,
+    "1": 2,
+    "2": 0,
+    "3": 1,
+    "4": 3,
+    "5": 2,
+    "6": 2,
+    "7": 0,
+    "8": 3,
+    "9": 3
+  }
+}
