@@ -1,0 +1,25 @@
+{
+  "algorithm": "greedy_welsh_powell",
+  "k": 4,
+  "runtime": 4.291534423828125e-05,
+  "is_valid": true,
+  "num_conflicts": 0,
+  "coloring": [
+    1,
+    1,
+    0,
+    2,
+    1,
+    0,
+    0,
+    0,
+    1,
+    0
+  ],
+  "slot_counts": {
+    "0": 5,
+    "1": 4,
+    "2": 1,
+    "3": 0
+  }
+}
