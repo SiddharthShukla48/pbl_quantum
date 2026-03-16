@@ -1,0 +1,10 @@
+{
+  "num_courses": 10,
+  "num_students": 80,
+  "num_enrollments": 261,
+  "conflict_pct": 20.0,
+  "num_conflicts": 9,
+  "density": 20.0,
+  "max_degree": 4,
+  "min_k_estimate": 5
+}

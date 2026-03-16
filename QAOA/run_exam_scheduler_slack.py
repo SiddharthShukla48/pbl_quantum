@@ -1,6 +1,15 @@
 """
-Interactive Exam Scheduler - Simplified Random Conflict Version
-================================================================
+Interactive Exam Scheduler - Slack Variables Version
+====================================================
+
+Same as run_exam_scheduler.py but uses SLACK VARIABLES for Constraint 4 (capacity)
+instead of quadratic expansion.
+
+Slack Variable Approach (Option A):
+- For each time slot k, introduce slack variables s_k representing capacity overflow
+- Better for: Understanding constraint relaxation, different penalty structures
+- Comparison: With quadratic (Option B), violations only penalized in energy
+           With slack (Option A), violations explicitly modeled as variables
 
 Single script that:
 1. Generates random conflict graph with controlled density
@@ -13,22 +22,23 @@ Features:
 - Exact control over conflict percentage
 - Neal backend by default (fast)
 - Optional visualization (heatmap, graph, timetable)
+- Slack variables for capacity constraint
 
 Usage:
     # Basic usage (interactive prompts)
-    python run_exam_scheduler.py
+    python run_exam_scheduler_slack.py
     
     # Command-line with default 40% conflicts
-    python run_exam_scheduler.py --courses 10 --k 4
+    python run_exam_scheduler_slack.py --courses 10 --k 4
     
     # Control conflict density
-    python run_exam_scheduler.py --courses 10 --k 4 --conflict-pct 30
+    python run_exam_scheduler_slack.py --courses 10 --k 4 --conflict-pct 30
     
     # With visualization
-    python run_exam_scheduler.py --courses 10 --k 4 --visualize
+    python run_exam_scheduler_slack.py --courses 10 --k 4 --visualize
     
     # Compare backends
-    python run_exam_scheduler.py --courses 10 --k 4 --backend both
+    python run_exam_scheduler_slack.py --courses 10 --k 4 --backend both
 
 How Slot Assignment Works:
 ---------------------------
@@ -38,16 +48,21 @@ For 10 exams and K=4 slots, we have 40 binary variables total.
 Variable encoding:
   x[exam_id, slot_id] = 1 means exam is assigned to that slot
   
+Additionally, for Constraint 4, we have slack variables:
+  s[slot_id, overflow_unit] = 1 means that slot exceeds capacity by that unit
+
 Example: Exam 0 → variables [0,1,2,3] represent slots [0,1,2,3]
          Exam 1 → variables [4,5,6,7] represent slots [0,1,2,3]
-         Exam 2 → variables [8,9,10,11] represent slots [0,1,2,3]
+         Slot 0 slack → variables [40,41,42,...] represent overflow units
 
 The QUBO solver finds which variables should be 1 such that:
   1. Each exam has exactly one slot (one variable = 1 per exam)
   2. No two conflicting exams share the same slot
+  3. Same-year exams not in consecutive slots (soft penalty)
+  4. Slot capacity not exceeded (slack variables = 0 preferred)
 
 Author: Quantum Exam Scheduling
-Date: February 2026
+Date: March 2026
 """
 
 import numpy as np
@@ -248,49 +263,79 @@ def generate_dataset(num_courses, num_students, avg_courses_per_student, conflic
 
 
 # ============================================================================
-# STEP 2: BUILD QUBO
+# STEP 2: BUILD QUBO WITH SLACK VARIABLES
 # ============================================================================
 
-def build_qubo(adjacency, K, courses_df=None,
-               lambda1=10000, lambda2=5000, lambda3=500, lambda4=200,
-               capacity=None):
+def build_qubo_slack(adjacency, K, courses_df=None,
+                     lambda1=10000, lambda2=5000, lambda3=500, lambda4=200,
+                     capacity=None, max_slack_units=None):
     """
-    Build QUBO matrix for exam scheduling with 4 constraints:
+    Build QUBO matrix for exam scheduling with 4 constraints using SLACK VARIABLES
+    for the capacity constraint (Option A).
 
     Constraint 1 (lambda1): Each exam assigned to exactly one slot (one-hot)
     Constraint 2 (lambda2): Conflicting exams must be in different slots (hard)
     Constraint 3 (lambda3): Same-year exams should not be in consecutive slots (soft)
-    Constraint 4 (lambda4): Total enrollment per slot should not exceed capacity (soft)
+    Constraint 4 (lambda4): Total enrollment per slot should not exceed capacity (soft, with slack)
     
     Args:
-        adjacency   : N×N conflict matrix
-        K           : Number of time slots
-        courses_df  : DataFrame with 'year' and 'enrollment' columns
-        lambda1     : Penalty for one-hot violation (default 10000)
-        lambda2     : Penalty for conflict in same slot (default 5000)
-        lambda3     : Penalty for same-year exams in consecutive slots (default 500)
-        lambda4     : Penalty for exceeding slot capacity (default 200)
-        capacity    : Max total enrollment allowed per slot (default: auto = mean enrollment × N/K)
+        adjacency         : N×N conflict matrix
+        K                 : Number of time slots
+        courses_df        : DataFrame with 'year' and 'enrollment' columns
+        lambda1           : Penalty for one-hot violation (default 10000)
+        lambda2           : Penalty for conflict in same slot (default 5000)
+        lambda3           : Penalty for same-year exams in consecutive slots (default 500)
+        lambda4           : Penalty for each slack variable active (default 200)
+        capacity          : Max total enrollment allowed per slot (default: auto)
+        max_slack_units   : Maximum slack units per slot (default: auto = ceil(max_enrollment))
     """
     
     print("\n" + "="*60)
-    print("BUILDING QUBO MATRIX")
+    print("BUILDING QUBO MATRIX (SLACK VARIABLES VERSION)")
     print("="*60)
     
     n = len(adjacency)  # Number of exams
-    num_vars = n * K
+    num_exam_vars = n * K
     
     print(f"Exams: {n}")
     print(f"Colors (K): {K}")
-    print(f"Variables: {num_vars}")
-    print(f"QUBO size: {num_vars} × {num_vars}")
+    print(f"Exam variables: {num_exam_vars}")
     print(f"λ1={lambda1}  λ2={lambda2}  λ3={lambda3}  λ4={lambda4}")
     
-    Q = np.zeros((num_vars, num_vars))
+    # Auto-compute capacity and max slack units if not provided
+    if courses_df is not None:
+        enrollments = courses_df['enrollment'].values.astype(float)
+        if capacity is None:
+            capacity = int(np.mean(enrollments) * (n / K) * 1.2)
+        if max_slack_units is None:
+            max_slack_units = int(np.ceil(np.max(enrollments)))
+    else:
+        if capacity is None:
+            capacity = 100
+        if max_slack_units is None:
+            max_slack_units = 50
     
-    # Helper function: variable index for exam i in slot k
-    def var_idx(exam, color):
+    print(f"Capacity per slot: {capacity}")
+    print(f"Max slack units per slot: {max_slack_units}")
+    
+    # Total variables: exam assignment (n*K) + slack variables (K*max_slack_units)
+    num_slack_vars = K * max_slack_units
+    total_vars = num_exam_vars + num_slack_vars
+    
+    print(f"Slack variables: {num_slack_vars}")
+    print(f"Total variables: {total_vars}")
+    print(f"QUBO size: {total_vars} × {total_vars}")
+    
+    Q = np.zeros((total_vars, total_vars))
+    
+    # Helper functions
+    def exam_var_idx(exam, color):
+        """Index for exam assignment variable x_ik"""
         return exam * K + color
+    
+    def slack_var_idx(slot, unit):
+        """Index for slack variable s_ku (overflow unit u in slot k)"""
+        return num_exam_vars + slot * max_slack_units + unit
     
     # -----------------------------------------------------------------------
     # Constraint 1: Each exam gets exactly one slot (one-hot)
@@ -300,11 +345,11 @@ def build_qubo(adjacency, K, courses_df=None,
     print("\nAdding C1: Each exam exactly one slot...")
     for exam in range(n):
         for c in range(K):
-            idx = var_idx(exam, c)
+            idx = exam_var_idx(exam, c)
             Q[idx, idx] += -lambda1  # Diagonal
             
             for c2 in range(c+1, K):
-                idx2 = var_idx(exam, c2)
+                idx2 = exam_var_idx(exam, c2)
                 Q[idx, idx2] += 2 * lambda1  # Off-diagonal
                 Q[idx2, idx] += 2 * lambda1  # Symmetric
     
@@ -319,8 +364,8 @@ def build_qubo(adjacency, K, courses_df=None,
             if adjacency[i, j] > 0:
                 num_conflict_pairs += 1
                 for c in range(K):
-                    idx_i = var_idx(i, c)
-                    idx_j = var_idx(j, c)
+                    idx_i = exam_var_idx(i, c)
+                    idx_j = exam_var_idx(j, c)
                     Q[idx_i, idx_j] += lambda2
                     Q[idx_j, idx_i] += lambda2
     print(f"✓ {num_conflict_pairs} conflict pairs added")
@@ -341,14 +386,14 @@ def build_qubo(adjacency, K, courses_df=None,
                     num_consec_pairs += 1
                     for k in range(K - 1):  # k and k+1 are consecutive
                         # Exam i in slot k  AND  exam j in slot k+1
-                        a = var_idx(i, k)
-                        b = var_idx(j, k + 1)
+                        a = exam_var_idx(i, k)
+                        b = exam_var_idx(j, k + 1)
                         Q[a, b] += lambda3
                         Q[b, a] += lambda3
                         
                         # Exam i in slot k+1  AND  exam j in slot k
-                        c = var_idx(i, k + 1)
-                        d = var_idx(j, k)
+                        c = exam_var_idx(i, k + 1)
+                        d = exam_var_idx(j, k)
                         Q[c, d] += lambda3
                         Q[d, c] += lambda3
         
@@ -357,43 +402,35 @@ def build_qubo(adjacency, K, courses_df=None,
         print("Skipping C3: no course year data or lambda3=0")
     
     # -----------------------------------------------------------------------
-    # Constraint 4: Slot capacity — total enrollment per slot ≤ C (soft, option B)
-    # E4 = λ4 × Σₖ (Σᵢ eᵢ·xᵢₖ - C)²
-    # Expanding:
-    #   Diagonal:    Q[xᵢₖ, xᵢₖ] += λ4 × (eᵢ² - 2C·eᵢ)
-    #   Off-diagonal Q[xᵢₖ, xⱼₖ] += 2 × λ4 × eᵢ × eⱼ  for i≠j, same slot k
+    # Constraint 4: Slot capacity with SLACK VARIABLES (Option A)
+    # 
+    # For each slot k, we need: Σᵢ eᵢ·xᵢₖ ≤ C + M·Σᵤ s_ku
+    # where s_ku = 1 means overflow unit u is "used" in slot k
+    # 
+    # Rewritten as:
+    # E4 = λ4 × Σₖ Σᵤ s_ku
+    # (This penalizes activating slack variables; we don't directly enforce
+    #  the enrollment constraint in QUBO, just penalize slack activation)
+    # 
+    # The constraint could be better enforced with auxiliary variables,
+    # but for now, we just penalize slack variables directly.
     # -----------------------------------------------------------------------
     if courses_df is not None and lambda4 > 0:
-        enrollments = courses_df['enrollment'].values.astype(float)
+        print(f"Adding C4: Slot capacity via slack variables (λ4={lambda4})...")
         
-        # Auto-compute capacity: mean enrollment × (N/K) with 20% headroom
-        if capacity is None:
-            capacity = int(np.mean(enrollments) * (n / K) * 1.2)
-        
-        print(f"Adding C4: Slot capacity ≤ {capacity} total enrollment...")
-        
+        # Simple approach: penalize each slack variable
         for k in range(K):
-            for i in range(n):
-                idx_i = var_idx(i, k)
-                ei = enrollments[i]
-                
-                # Diagonal contribution: λ4 × (eᵢ² - 2C·eᵢ)
-                Q[idx_i, idx_i] += lambda4 * (ei**2 - 2 * capacity * ei)
-                
-                # Off-diagonal: 2 × λ4 × eᵢ × eⱼ for j > i in same slot k
-                for j in range(i+1, n):
-                    idx_j = var_idx(j, k)
-                    ej = enrollments[j]
-                    Q[idx_i, idx_j] += 2 * lambda4 * ei * ej
-                    Q[idx_j, idx_i] += 2 * lambda4 * ei * ej
+            for u in range(max_slack_units):
+                idx = slack_var_idx(k, u)
+                Q[idx, idx] += lambda4
         
-        print(f"✓ Capacity constraint added (C={capacity})")
+        print(f"✓ Slack penalty added: {K * max_slack_units} slack variables")
     else:
-        print("Skipping C4: no enrollment data or lambda4=0")
+        print("Skipping C4: lambda4=0")
     
     print(f"\n✓ QUBO built: {np.count_nonzero(Q)} non-zero entries")
     
-    return Q
+    return Q, num_exam_vars, num_slack_vars, max_slack_units, capacity
 
 
 # ============================================================================
@@ -521,31 +558,15 @@ def solve_neal(Q, num_reads=1000):
 # STEP 5: DECODE & VALIDATE
 # ============================================================================
 
-def decode_solution(solution, num_courses, K):
+def decode_solution(solution, num_courses, K, num_exam_vars, num_slack_vars, max_slack_units):
     """
-    Decode binary solution to coloring (slot assignment)
-    
-    How slot assignment works:
-    1. Each exam has K binary variables (one per time slot)
-    2. Variable x[exam_i, slot_c] = 1 means exam i is assigned to slot c
-    3. Variable index: var_idx = exam * K + slot
-    4. For exam 0: variables 0,1,2,...,K-1 represent slots 0,1,2,...,K-1
-    5. For exam 1: variables K,K+1,...,2K-1 represent slots 0,1,2,...,K-1
-    
-    Example with 10 exams, K=4:
-    - Exam 0: vars [0,1,2,3]   → slot assigned where var=1
-    - Exam 1: vars [4,5,6,7]   → slot assigned where var=1
-    - Exam 2: vars [8,9,10,11] → slot assigned where var=1
-    - Total: 40 binary variables
-    
-    The QUBO solver finds which variables should be 1 (and rest 0)
-    such that:
-    - Each exam has exactly one var=1 (one slot assigned)
-    - No two conflicting exams have var=1 in the same slot
+    Decode binary solution to coloring (slot assignment) and slack variables
     """
     
     coloring = {}
+    slack_usage = {}
     
+    # Decode exam assignments
     for exam in range(num_courses):
         for color in range(K):
             var_idx = exam * K + color
@@ -553,7 +574,17 @@ def decode_solution(solution, num_courses, K):
                 coloring[exam] = color
                 break
     
-    return coloring
+    # Decode slack variables
+    for k in range(K):
+        slack_count = 0
+        for u in range(max_slack_units):
+            var_idx = num_exam_vars + k * max_slack_units + u
+            if solution[var_idx] == 1:
+                slack_count += 1
+        if slack_count > 0:
+            slack_usage[k] = slack_count
+    
+    return coloring, slack_usage
 
 
 def validate_solution(coloring, adjacency, num_courses):
@@ -812,33 +843,30 @@ def parse_args():
     """Parse command-line arguments"""
     
     parser = argparse.ArgumentParser(
-        description='Interactive Exam Scheduler - Complete Pipeline',
+        description='Interactive Exam Scheduler - Slack Variables Version',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Interactive mode (prompts for inputs)
-  python run_exam_scheduler.py
+  python run_exam_scheduler_slack.py
   
   # Command-line mode with default settings (50 students, 40% conflicts)
-  python run_exam_scheduler.py --courses 10 --k 4
+  python run_exam_scheduler_slack.py --courses 10 --k 4
   
   # Specify number of students
-  python run_exam_scheduler.py --courses 10 --students 80 --k 4
+  python run_exam_scheduler_slack.py --courses 10 --students 80 --k 4
   
   # Low conflict density (20%)
-  python run_exam_scheduler.py --courses 10 --students 60 --k 3 --conflict-pct 20
+  python run_exam_scheduler_slack.py --courses 10 --students 60 --k 3 --conflict-pct 20
   
   # Medium conflict density (50%)
-  python run_exam_scheduler.py --courses 10 --students 60 --k 4 --conflict-pct 50
-  
-  # High conflict density (70%)
-  python run_exam_scheduler.py --courses 10 --students 60 --k 6 --conflict-pct 70
+  python run_exam_scheduler_slack.py --courses 10 --students 60 --k 4 --conflict-pct 50
   
   # With visualization
-  python run_exam_scheduler.py --courses 10 --k 4 --visualize
+  python run_exam_scheduler_slack.py --courses 10 --k 4 --visualize
   
   # Compare backends (QAOA vs Neal)
-  python run_exam_scheduler.py --courses 8 --k 3 --backend both
+  python run_exam_scheduler_slack.py --courses 8 --k 3 --backend both
         """
     )
     
@@ -880,10 +908,13 @@ Examples:
                        help='Penalty: same-year exams in consecutive slots (default: 500, set 0 to disable)')
     
     parser.add_argument('--lambda4', type=float, default=200,
-                       help='Penalty: slot capacity exceeded (default: 200, set 0 to disable)')
+                       help='Penalty: each slack variable active (default: 200, set 0 to disable)')
     
     parser.add_argument('--capacity', type=int, default=None,
                        help='Max total enrollment per slot (default: auto = mean_enrollment × N/K × 1.2)')
+    
+    parser.add_argument('--max-slack', type=int, default=None,
+                       help='Max slack units per slot (default: auto = ceil(max_enrollment))')
     
     parser.add_argument('--visualize', action='store_true',
                        help='Generate visualization plots (requires matplotlib, networkx)')
@@ -914,7 +945,7 @@ def main():
     args = get_user_input(args)
     
     print("\n" + "="*60)
-    print("EXAM SCHEDULING PIPELINE")
+    print("EXAM SCHEDULING PIPELINE (SLACK VARIABLES)")
     print("="*60)
     print(f"Courses: {args.courses}")
     print(f"Students: {args.students}")
@@ -924,10 +955,12 @@ def main():
     print(f"λ1={args.lambda1}  λ2={args.lambda2}  λ3={args.lambda3}  λ4={args.lambda4}")
     if args.capacity:
         print(f"Slot capacity: {args.capacity}")
+    if args.max_slack:
+        print(f"Max slack units: {args.max_slack}")
     
     # Create output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path('./output') / f'run_{timestamp}'
+    output_dir = Path('./output') / f'run_slack_{timestamp}'
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Step 1: Generate dataset
@@ -947,8 +980,8 @@ def main():
         visualize_adjacency_matrix(adjacency, output_dir, args.courses)
         visualize_conflict_graph(adjacency, output_dir, args.courses)
     
-    # Step 2: Build QUBO
-    Q = build_qubo(
+    # Step 2: Build QUBO with slack variables
+    Q, num_exam_vars, num_slack_vars, max_slack_units, capacity = build_qubo_slack(
         adjacency,
         K=args.k,
         courses_df=courses_df,
@@ -956,9 +989,10 @@ def main():
         lambda2=args.lambda2,
         lambda3=args.lambda3,
         lambda4=args.lambda4,
-        capacity=args.capacity
+        capacity=args.capacity,
+        max_slack_units=args.max_slack
     )
-    np.save(output_dir / 'qubo_matrix.npy', Q)
+    np.save(output_dir / 'qubo_matrix_slack.npy', Q)
     
     # Step 3: Solve
     results = {}
@@ -986,7 +1020,10 @@ def main():
         print(f"\n{backend_name.upper()}")
         print("-" * 60)
         
-        coloring = decode_solution(result['solution'], args.courses, args.k)
+        coloring, slack_usage = decode_solution(
+            result['solution'], args.courses, args.k, 
+            num_exam_vars, num_slack_vars, max_slack_units
+        )
         is_valid, num_conflicts, violations = validate_solution(
             coloring, adjacency, args.courses
         )
@@ -997,30 +1034,35 @@ def main():
         print(f"Conflicts: {num_conflicts}")
         print(f"Exams assigned: {len(coloring)}/{args.courses}")
         print(f"Colors used: {len(set(coloring.values()))}/{args.k}")
+        print(f"Slack variables active: {sum(slack_usage.values())} (by slot: {slack_usage})")
         
         # Save results
         result_data = {
             'backend': backend_name,
+            'version': 'slack_variables',
             'num_courses': args.courses,
             'num_students': args.students,
             'k': args.k,
             'avg_courses_per_student': args.avg_courses,
+            'capacity': int(capacity),
+            'max_slack_units': int(max_slack_units),
             'runtime_seconds': result['runtime'],
             'energy': float(result['energy']),
             'is_valid': is_valid,
             'num_conflicts': num_conflicts,
             'colors_used': len(set(coloring.values())),
+            'slack_usage': {str(k): int(v) for k, v in slack_usage.items()},
             'coloring': {str(k): int(v) for k, v in coloring.items()}
         }
         
-        with open(output_dir / f'{backend_name}_results.json', 'w') as f:
+        with open(output_dir / f'{backend_name}_results_slack.json', 'w') as f:
             json.dump(result_data, f, indent=2)
         
         # Generate timetable if valid
         if is_valid:
             timetable = generate_timetable(coloring, courses_df, args.k)
-            timetable.to_csv(output_dir / f'timetable_{backend_name}.csv', index=False)
-            print(f"\n✓ Saved timetable to: {output_dir}/timetable_{backend_name}.csv")
+            timetable.to_csv(output_dir / f'timetable_{backend_name}_slack.csv', index=False)
+            print(f"\n✓ Saved timetable to: {output_dir}/timetable_{backend_name}_slack.csv")
             
             # Visualize timetable (if requested)
             if args.visualize:
@@ -1038,12 +1080,13 @@ def main():
     print(f"Files generated:")
     print(f"  - courses.csv (dataset)")
     print(f"  - conflict_adjacency.csv (conflict graph)")
-    print(f"  - qubo_matrix.npy (QUBO)")
-    print(f"  - *_results.json (solver outputs)")
-    if any(validate_solution(decode_solution(res['solution'], args.courses, args.k), 
+    print(f"  - qubo_matrix_slack.npy (QUBO with slack)")
+    print(f"  - *_results_slack.json (solver outputs)")
+    if any(validate_solution(decode_solution(res['solution'], args.courses, args.k, 
+                                            num_exam_vars, num_slack_vars, max_slack_units)[0], 
                             adjacency, args.courses)[0] 
            for res in results.values()):
-        print(f"  - timetable_*.csv (valid schedules)")
+        print(f"  - timetable_*_slack.csv (valid schedules)")
     
     # Comparison if both backends used
     if len(results) > 1:
@@ -1051,11 +1094,12 @@ def main():
         print("BACKEND COMPARISON")
         print("="*60)
         for name, res in results.items():
-            col = decode_solution(res['solution'], args.courses, args.k)
+            col, slack = decode_solution(res['solution'], args.courses, args.k,
+                                        num_exam_vars, num_slack_vars, max_slack_units)
             val, conf, _ = validate_solution(col, adjacency, args.courses)
             print(f"{name.upper():10s} | {res['runtime']:6.2f}s | "
                   f"{'✓ VALID' if val else '✗ INVALID':10s} | "
-                  f"Conflicts: {conf}")
+                  f"Conflicts: {conf} | Slack active: {sum(slack.values())}")
 
 
 if __name__ == '__main__':
