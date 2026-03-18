@@ -330,7 +330,7 @@ def _build_courses_and_adjacency_from_rows(filtered_df, label):
     return courses_df, students_df, enrollments_df, adjacency, meta
 
 
-def generate_dataset_from_csv(input_csv, output_dir, adjacency_mode='all'):
+def generate_dataset_from_csv(input_csv, output_dir, adjacency_mode='all', max_rows=None):
     """
     Generate dataset from university CSV and build two adjacency matrices:
     1) major-only (Course Type == MAJOR)
@@ -340,14 +340,21 @@ def generate_dataset_from_csv(input_csv, output_dir, adjacency_mode='all'):
         input_csv: Source enrollment CSV path
         output_dir: Output directory
         adjacency_mode: Which graph to use in solver ('major' or 'all')
+        max_rows: Optional row limit to load from CSV before applying filters
     """
     print("\n" + "="*60)
     print("GENERATING DATASET FROM CSV")
     print("="*60)
     print(f"Input CSV: {input_csv}")
     print(f"Adjacency mode for solver: {adjacency_mode}")
+    if max_rows is not None:
+        print(f"Row limit: first {max_rows} rows")
 
     src = pd.read_csv(input_csv)
+    if max_rows is not None:
+        if max_rows <= 0:
+            raise ValueError("--max-rows must be a positive integer")
+        src = src.head(max_rows).copy()
 
     required = [
         'Registration No.', 'Course Code', 'Academic Session', 'Registration Status',
@@ -424,6 +431,7 @@ def generate_dataset_from_csv(input_csv, output_dir, adjacency_mode='all'):
     metadata = {
         'source': 'csv',
         'input_csv': str(input_csv),
+        'max_rows': int(max_rows) if max_rows is not None else None,
         'filters': {
             'registration_status': 'Approved',
             'course_classification': 'Theory',
@@ -463,6 +471,7 @@ def build_qubo(adjacency, K, courses_df=None,
     Constraint 2 (lambda2): Conflicting exams must be in different slots (hard)
     Constraint 3 (lambda3): Same-year exams should not be in consecutive slots (soft)
     Constraint 4 (lambda4): Total enrollment per slot should not exceed capacity (soft)
+                            Uses binary-weighted slack bits for efficient overflow encoding
     
     Args:
         adjacency   : N×N conflict matrix
@@ -472,7 +481,7 @@ def build_qubo(adjacency, K, courses_df=None,
         lambda2     : Penalty for conflict in same slot (default 5000)
         lambda3     : Penalty for same-year exams in consecutive slots (default 500)
         lambda4     : Penalty for exceeding slot capacity (default 200)
-        capacity    : Max total enrollment allowed per slot (default: auto = mean enrollment × N/K)
+        capacity    : Room capacity (max total enrollment per slot). REQUIRED for C4.
     """
     
     print("\n" + "="*60)
@@ -480,12 +489,32 @@ def build_qubo(adjacency, K, courses_df=None,
     print("="*60)
     
     n = len(adjacency)  # Number of exams
-    num_vars = n * K
+    
+    # Determine number of slack bits needed for C4
+    enrollments = courses_df['enrollment'].values.astype(float) if courses_df is not None else np.ones(n)
+    
+    if capacity is None:
+        # Default: auto-compute based on mean per-slot load
+        capacity = int(np.mean(enrollments) * (n / K) * 1.2)
+    
+    # Number of bits to represent slack in (L_k + S_k - C)^2.
+    # Here S_k models residual to reach capacity, so bound is capacity itself.
+    max_slack_value = max(0, int(capacity))
+    num_slack_bits = max(1, int(np.ceil(np.log2(max_slack_value + 1)))) if max_slack_value > 0 else 1
+    
+    # Total variables: n*K exam variables + K*num_slack_bits slack variables
+    num_exam_vars = n * K
+    num_slack_vars = K * num_slack_bits
+    num_vars = num_exam_vars + num_slack_vars
     
     print(f"Exams: {n}")
     print(f"Colors (K): {K}")
-    print(f"Variables: {num_vars}")
+    print(f"Exam variables: {num_exam_vars}")
+    print(f"Slack bits per slot: {num_slack_bits} (max slack value: {max_slack_value})")
+    print(f"Slack variables: {num_slack_vars}")
+    print(f"Total variables: {num_vars}")
     print(f"QUBO size: {num_vars} × {num_vars}")
+    print(f"Room capacity: {capacity}")
     print(f"λ1={lambda1}  λ2={lambda2}  λ3={lambda3}  λ4={lambda4}")
     
     Q = np.zeros((num_vars, num_vars))
@@ -493,6 +522,10 @@ def build_qubo(adjacency, K, courses_df=None,
     # Helper function: variable index for exam i in slot k
     def var_idx(exam, color):
         return exam * K + color
+    
+    # Helper function: variable index for slack bit b in slot k
+    def slack_idx(slot, bit):
+        return num_exam_vars + slot * num_slack_bits + bit
     
     # -----------------------------------------------------------------------
     # Constraint 1: Each exam gets exactly one slot (one-hot)
@@ -558,40 +591,84 @@ def build_qubo(adjacency, K, courses_df=None,
     else:
         print("Skipping C3: no course year data or lambda3=0")
     
+    
     # -----------------------------------------------------------------------
-    # Constraint 4: Slot capacity — total enrollment per slot ≤ C (soft, option B)
-    # E4 = λ4 × Σₖ (Σᵢ eᵢ·xᵢₖ - C)²
-    # Expanding:
-    #   Diagonal:    Q[xᵢₖ, xᵢₖ] += λ4 × (eᵢ² - 2C·eᵢ)
-    #   Off-diagonal Q[xᵢₖ, xⱼₖ] += 2 × λ4 × eᵢ × eⱼ  for i≠j, same slot k
+    # Constraint 4: Slot capacity with binary-weighted slack bits (soft)
+    # E4 = λ4 × Σₖ (Σᵢ eᵢ·xᵢₖ + Σᵦ 2ᵇ·sₖᵦ - C)²
+    #
+    # Where:
+    #   eᵢ = enrollment of course i
+    #   xᵢₖ = binary var for course i in slot k
+    #   sₖᵦ = binary slack var for slot k, bit b (weight = 2^b)
+    #   C = room capacity
+    #
+    # Slack bits use binary (exponential) weights: 1, 2, 4, 8, ..., 2^(num_slack_bits-1)
+    # This efficiently encodes overflow values using minimal variables
+    #
+    # Expansion of (L_k + S_k - C)²:
+    #   L_k = Σᵢ eᵢ·xᵢₖ  (load from course assignments)
+    #   S_k = Σᵦ 2ᵇ·sₖᵦ  (slack bits with exponential weights)
+    #   E4 = λ4 × Σₖ [L_k² + S_k² + C² + 2·L_k·S_k - 2·C·L_k - 2·C·S_k]
+    #
+    # QUBO coefficients:
+    #   1. Exam diagonal:     λ4·(eᵢ² - 2·C·eᵢ)
+    #   2. Exam off-diagonal (same slot): 2·λ4·eᵢ·eⱼ
+    #   3. Slack diagonal:    λ4·(2^(2b) - 2·C·2ᵇ)
+    #   4. Slack off-diagonal (same slot): 2·λ4·2ᵇ·2ᵇ' = λ4·2^(b+b'+1)
+    #   5. Cross terms (exam-slack, same slot): 2·λ4·eᵢ·2ᵇ
     # -----------------------------------------------------------------------
     if courses_df is not None and lambda4 > 0:
         enrollments = courses_df['enrollment'].values.astype(float)
         
-        # Auto-compute capacity: mean enrollment × (N/K) with 20% headroom
-        if capacity is None:
-            capacity = int(np.mean(enrollments) * (n / K) * 1.2)
-        
-        print(f"Adding C4: Slot capacity ≤ {capacity} total enrollment...")
+        print(f"Adding C4: Slot capacity ≤ {capacity} with binary-weighted slack bits...")
+        print(f"           {num_slack_bits} slack bits per slot × {K} slots = {num_slack_vars} slack variables")
         
         for k in range(K):
+            # 1. Exam variable diagonal contributions: λ4·(eᵢ² - 2·C·eᵢ)
             for i in range(n):
                 idx_i = var_idx(i, k)
                 ei = enrollments[i]
-                
-                # Diagonal contribution: λ4 × (eᵢ² - 2C·eᵢ)
                 Q[idx_i, idx_i] += lambda4 * (ei**2 - 2 * capacity * ei)
-                
-                # Off-diagonal: 2 × λ4 × eᵢ × eⱼ for j > i in same slot k
+            
+            # 2. Exam off-diagonal contributions (same slot): 2·λ4·eᵢ·eⱼ
+            for i in range(n):
                 for j in range(i+1, n):
+                    idx_i = var_idx(i, k)
                     idx_j = var_idx(j, k)
+                    ei = enrollments[i]
                     ej = enrollments[j]
                     Q[idx_i, idx_j] += 2 * lambda4 * ei * ej
                     Q[idx_j, idx_i] += 2 * lambda4 * ei * ej
+            
+            # 3. Slack variable diagonal contributions: λ4·(2^(2b) - 2·C·2ᵇ) = λ4·2ᵇ·(2ᵇ - 2·C)
+            for b in range(num_slack_bits):
+                idx_slack = slack_idx(k, b)
+                weight = 2**b
+                Q[idx_slack, idx_slack] += lambda4 * weight * (weight - 2 * capacity)
+            
+            # 4. Slack off-diagonal contributions (same slot): λ4·2^(b+b'+1)
+            for b in range(num_slack_bits):
+                for b_prime in range(b+1, num_slack_bits):
+                    idx_b = slack_idx(k, b)
+                    idx_bp = slack_idx(k, b_prime)
+                    weight = 2**(b + b_prime + 1)
+                    Q[idx_b, idx_bp] += lambda4 * weight
+                    Q[idx_bp, idx_b] += lambda4 * weight
+            
+            # 5. Cross terms (exam-slack, same slot): 2·λ4·eᵢ·2ᵇ
+            for i in range(n):
+                idx_i = var_idx(i, k)
+                ei = enrollments[i]
+                for b in range(num_slack_bits):
+                    idx_slack = slack_idx(k, b)
+                    weight_b = 2**b
+                    Q[idx_i, idx_slack] += 2 * lambda4 * ei * weight_b
+                    Q[idx_slack, idx_i] += 2 * lambda4 * ei * weight_b
         
-        print(f"✓ Capacity constraint added (C={capacity})")
+        print(f"✓ Capacity constraint with binary slack bits added (C={capacity})")
     else:
         print("Skipping C4: no enrollment data or lambda4=0")
+    
     
     print(f"\n✓ QUBO built: {np.count_nonzero(Q)} non-zero entries")
     
@@ -662,9 +739,13 @@ def solve_neal(Q, num_reads=1000):
 # STEP 5: DECODE & VALIDATE
 # ============================================================================
 
-def decode_solution(solution, num_courses, K):
+def decode_solution(solution, num_courses, K, num_slack_bits=None):
     """
-    Decode binary solution to coloring (slot assignment)
+    Decode binary solution to slot assignment, extracting only exam variables.
+    
+    The solution vector includes:
+    - Indices 0 to num_courses*K-1: Exam assignment variables
+    - Indices num_courses*K onward: Slack variables (ignored in decoding)
     
     How slot assignment works:
     1. Each exam has K binary variables (one per time slot)
@@ -673,25 +754,23 @@ def decode_solution(solution, num_courses, K):
     4. For exam 0: variables 0,1,2,...,K-1 represent slots 0,1,2,...,K-1
     5. For exam 1: variables K,K+1,...,2K-1 represent slots 0,1,2,...,K-1
     
-    Example with 10 exams, K=4:
-    - Exam 0: vars [0,1,2,3]   → slot assigned where var=1
-    - Exam 1: vars [4,5,6,7]   → slot assigned where var=1
-    - Exam 2: vars [8,9,10,11] → slot assigned where var=1
-    - Total: 40 binary variables
+    Slack variables (if present) are used only for capacity constraint penalty
+    and are not used in the actual timetable.
     
-    The QUBO solver finds which variables should be 1 (and rest 0)
-    such that:
-    - Each exam has exactly one var=1 (one slot assigned)
-    - No two conflicting exams have var=1 in the same slot
+    Example with 10 exams, K=4, num_slack_bits=4:
+    - Exam variables: 0-39 (10 exams × 4 slots)
+    - Slack variables: 40-55 (4 slots × 4 bits)
+    - Decoding uses only indices 0-39
     """
     
     coloring = {}
+    num_exam_vars = num_courses * K
     
     for exam in range(num_courses):
-        for color in range(K):
-            var_idx = exam * K + color
+        for slot in range(K):
+            var_idx = exam * K + slot
             if solution[var_idx] == 1:
-                coloring[exam] = color
+                coloring[exam] = slot
                 break
     
     return coloring
@@ -1001,6 +1080,9 @@ Examples:
     parser.add_argument('--input-csv', type=str, default=None,
                        help='Path to university enrollment CSV (uses Approved+Theory filters and builds major/all adjacency)')
 
+    parser.add_argument('--max-rows', type=int, default=None,
+                       help='CSV mode only: use only first N rows from the input dataset before filters')
+
     parser.add_argument('--adjacency-mode', type=str, default='all',
                        choices=['major', 'all', 'both'],
                        help='When --input-csv is used, choose graph for solver: major, all, or both (default: all)')
@@ -1061,6 +1143,8 @@ def main():
     if args.input_csv:
         print(f"Input CSV: {args.input_csv}")
         print(f"Adjacency mode: {args.adjacency_mode}")
+        if args.max_rows is not None:
+            print(f"Row limit: first {args.max_rows} rows")
     else:
         print(f"Courses: {args.courses}")
         print(f"Students: {args.students}")
@@ -1086,7 +1170,8 @@ def main():
             courses_df, adjacency, metadata = generate_dataset_from_csv(
                 input_csv=args.input_csv,
                 output_dir=mode_output_dir,
-                adjacency_mode=mode
+                adjacency_mode=mode,
+                max_rows=args.max_rows
             )
             jobs.append((mode, mode_output_dir, courses_df, adjacency, metadata))
     else:
@@ -1155,14 +1240,28 @@ def main():
             print(f"Exams assigned: {len(coloring)}/{num_courses}")
             print(f"Colors used: {len(set(coloring.values()))}/{args.k}")
 
+            if args.input_csv:
+                selected_meta = metadata.get('selected_graph', {})
+                reported_num_students = int(selected_meta.get('num_students', 0))
+                reported_num_enrollments = int(selected_meta.get('num_enrollments', 0))
+                reported_avg_courses = (
+                    reported_num_enrollments / reported_num_students
+                    if reported_num_students > 0 else None
+                )
+            else:
+                reported_num_students = int(args.students)
+                reported_num_enrollments = int(metadata.get('num_enrollments', 0))
+                reported_avg_courses = float(args.avg_courses)
+
             # Save results
             result_data = {
                 'backend': backend_name,
                 'adjacency_mode': mode,
                 'num_courses': num_courses,
-                'num_students': args.students,
+                'num_students': reported_num_students,
+                'num_enrollments': reported_num_enrollments,
                 'k': args.k,
-                'avg_courses_per_student': args.avg_courses,
+                'avg_courses_per_student': reported_avg_courses,
                 'runtime_seconds': result['runtime'],
                 'energy': float(result['energy']),
                 'is_valid': is_valid,

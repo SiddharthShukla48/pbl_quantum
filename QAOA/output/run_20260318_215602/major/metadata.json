@@ -1,0 +1,48 @@
+{
+  "source": "csv",
+  "input_csv": "../Student Course (Jul-Nov 2025 and Winter 2025).csv",
+  "max_rows": 100,
+  "filters": {
+    "registration_status": "Approved",
+    "course_classification": "Theory",
+    "academic_sessions": [
+      "JUL-NOV 2025",
+      "WINTER 2025"
+    ],
+    "excluded_semesters": [
+      "I",
+      "II"
+    ]
+  },
+  "adjacency_mode_selected": "major",
+  "major_graph": {
+    "label": "major",
+    "num_courses": 55,
+    "num_students": 21,
+    "num_enrollments": 81,
+    "num_conflicts": 254,
+    "density": 17.104377104377104,
+    "max_degree": 22,
+    "min_k_estimate": 23
+  },
+  "all_graph": {
+    "label": "all",
+    "num_courses": 66,
+    "num_students": 22,
+    "num_enrollments": 93,
+    "num_conflicts": 300,
+    "density": 13.986013986013987,
+    "max_degree": 23,
+    "min_k_estimate": 24
+  },
+  "selected_graph": {
+    "label": "major",
+    "num_courses": 55,
+    "num_students": 21,
+    "num_enrollments": 81,
+    "num_conflicts": 254,
+    "density": 17.104377104377104,
+    "max_degree": 22,
+    "min_k_estimate": 23
+  }
+}
