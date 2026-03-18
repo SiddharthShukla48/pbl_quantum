@@ -5,7 +5,7 @@ Interactive Exam Scheduler - Simplified Random Conflict Version
 Single script that:
 1. Generates random conflict graph with controlled density
 2. Builds QUBO matrix for graph coloring problem
-3. Solves with Neal (simulated annealing) or QAOA
+3. Solves with Neal (simulated annealing)
 4. Generates timetable and visualizations
 
 Features:
@@ -27,8 +27,8 @@ Usage:
     # With visualization
     python run_exam_scheduler.py --courses 10 --k 4 --visualize
     
-    # Compare backends
-    python run_exam_scheduler.py --courses 10 --k 4 --backend both
+    # Neal backend (only backend)
+    python run_exam_scheduler.py --courses 10 --k 4
 
 How Slot Assignment Works:
 ---------------------------
@@ -56,19 +56,8 @@ from pathlib import Path
 import json
 import time
 import argparse
+import itertools
 from datetime import datetime
-
-# Qiskit imports
-try:
-    from qiskit_optimization import QuadraticProgram
-    from qiskit_optimization.algorithms import MinimumEigenOptimizer
-    from qiskit_algorithms import QAOA
-    from qiskit_algorithms.optimizers import COBYLA
-    from qiskit.primitives import Sampler
-    QISKIT_AVAILABLE = True
-except ImportError:
-    QISKIT_AVAILABLE = False
-    print("⚠ Qiskit not available. QAOA backend disabled.")
 
 # D-Wave imports
 try:
@@ -247,6 +236,219 @@ def generate_dataset(num_courses, num_students, avg_courses_per_student, conflic
     return courses_df, adjacency, metadata
 
 
+def _semester_to_numeric(series):
+    """Convert semester labels (I..X) to numeric values where possible."""
+    mapping = {
+        'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5,
+        'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10
+    }
+    mapped = series.astype(str).str.strip().map(mapping)
+    return pd.to_numeric(mapped, errors='coerce')
+
+
+def _build_courses_and_adjacency_from_rows(filtered_df, label):
+    """
+    Build courses table and conflict adjacency from enrollment rows.
+
+    Conflict rule: two courses conflict if at least one student is enrolled in both.
+    """
+    if filtered_df.empty:
+        raise ValueError(f"No rows available after filtering for mode '{label}'.")
+
+    course_col = 'Course Code'
+    student_col = 'Registration No.'
+
+    # Build canonical course list
+    course_codes = sorted(filtered_df[course_col].astype(str).str.strip().unique().tolist())
+    course_to_id = {code: idx for idx, code in enumerate(course_codes)}
+
+    # Enrollment and semester summaries per course
+    sem_numeric = _semester_to_numeric(filtered_df['Semester'])
+    tmp = filtered_df.copy()
+    tmp['semester_num'] = sem_numeric
+
+    enroll_count = tmp.groupby(course_col)[student_col].nunique().to_dict()
+    desc_mode = tmp.groupby(course_col)['Description'].agg(
+        lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]
+    ).to_dict()
+
+    semester_mode = tmp.groupby(course_col)['semester_num'].agg(
+        lambda s: int(s.mode().iloc[0]) if s.notna().any() and not s.mode().empty else 1
+    ).to_dict()
+
+    courses = []
+    for code in course_codes:
+        courses.append({
+            'course_id': course_to_id[code],
+            'course_code': code,
+            'description': desc_mode.get(code, code),
+            # Reuse existing downstream field name expected by C3.
+            'year': int(semester_mode.get(code, 1)),
+            # Reuse existing downstream field name expected by C4.
+            'enrollment': int(enroll_count.get(code, 0))
+        })
+    courses_df = pd.DataFrame(courses).sort_values('course_id').reset_index(drop=True)
+
+    # Build adjacency from co-enrollment
+    n = len(course_codes)
+    adjacency = np.zeros((n, n), dtype=int)
+    enrollments = []
+
+    grouped = tmp.groupby(student_col)[course_col].apply(lambda s: sorted(set(s.tolist())))
+    for student_id, courses_for_student in grouped.items():
+        for course_code in courses_for_student:
+            enrollments.append({
+                'student_id': student_id,
+                'course_id': course_to_id[course_code]
+            })
+
+        for c1, c2 in itertools.combinations(courses_for_student, 2):
+            i = course_to_id[c1]
+            j = course_to_id[c2]
+            adjacency[i, j] = 1
+            adjacency[j, i] = 1
+
+    students_df = pd.DataFrame({'student_id': sorted(tmp[student_col].unique().tolist())})
+    enrollments_df = pd.DataFrame(enrollments)
+
+    num_edges = int(np.sum(adjacency) // 2)
+    density = num_edges / (n * (n - 1) / 2) * 100 if n > 1 else 0
+    degrees = np.sum(adjacency, axis=1)
+    max_degree = int(np.max(degrees)) if len(degrees) > 0 else 0
+
+    meta = {
+        'label': label,
+        'num_courses': int(n),
+        'num_students': int(students_df['student_id'].nunique()),
+        'num_enrollments': int(len(enrollments_df)),
+        'num_conflicts': int(num_edges),
+        'density': float(density),
+        'max_degree': int(max_degree),
+        'min_k_estimate': int(max_degree + 1)
+    }
+
+    return courses_df, students_df, enrollments_df, adjacency, meta
+
+
+def generate_dataset_from_csv(input_csv, output_dir, adjacency_mode='all'):
+    """
+    Generate dataset from university CSV and build two adjacency matrices:
+    1) major-only (Course Type == MAJOR)
+    2) all-theory (MAJOR + ELECTIVE + OPEN ELECTIVE and any other theory rows)
+
+    Args:
+        input_csv: Source enrollment CSV path
+        output_dir: Output directory
+        adjacency_mode: Which graph to use in solver ('major' or 'all')
+    """
+    print("\n" + "="*60)
+    print("GENERATING DATASET FROM CSV")
+    print("="*60)
+    print(f"Input CSV: {input_csv}")
+    print(f"Adjacency mode for solver: {adjacency_mode}")
+
+    src = pd.read_csv(input_csv)
+
+    required = [
+        'Registration No.', 'Course Code', 'Academic Session', 'Registration Status',
+        'Course Classification', 'Course Type', 'Semester', 'Description'
+    ]
+    missing = [c for c in required if c not in src.columns]
+    if missing:
+        raise ValueError(f"CSV missing required columns: {missing}")
+
+    for col in required:
+        src[col] = src[col].astype(str).str.strip()
+
+    # Apply user-requested filters: Approved + Theory + both sessions.
+    base = src[
+        (src['Registration Status'].str.upper() == 'APPROVED')
+        & (src['Course Classification'].str.upper() == 'THEORY')
+        & (src['Academic Session'].isin(['JUL-NOV 2025', 'WINTER 2025']))
+    ].copy()
+
+    # Exclude Semester I and II students as requested.
+    base = base[~base['Semester'].isin(['I', 'II'])].copy()
+
+    if base.empty:
+        raise ValueError("No rows left after filters (Approved + Theory + JUL-NOV/WINTER).")
+
+    major_rows = base[base['Course Type'].str.upper() == 'MAJOR'].copy()
+    all_rows = base.copy()
+
+    if major_rows.empty:
+        raise ValueError("No MAJOR rows left after filtering.")
+
+    major_courses, major_students, major_enrollments, major_adj, major_meta = _build_courses_and_adjacency_from_rows(
+        major_rows, 'major'
+    )
+    all_courses, all_students, all_enrollments, all_adj, all_meta = _build_courses_and_adjacency_from_rows(
+        all_rows, 'all'
+    )
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Save both matrices for analysis/comparison.
+    pd.DataFrame(
+        major_adj,
+        index=major_courses['course_code'],
+        columns=major_courses['course_code']
+    ).to_csv(output_path / 'conflict_adjacency_major.csv')
+
+    pd.DataFrame(
+        all_adj,
+        index=all_courses['course_code'],
+        columns=all_courses['course_code']
+    ).to_csv(output_path / 'conflict_adjacency_all.csv')
+
+    # Save selected working set used by solver.
+    if adjacency_mode == 'major':
+        selected_courses = major_courses
+        selected_students = major_students
+        selected_enrollments = major_enrollments
+        selected_adjacency = major_adj
+        selected_meta = major_meta
+    else:
+        selected_courses = all_courses
+        selected_students = all_students
+        selected_enrollments = all_enrollments
+        selected_adjacency = all_adj
+        selected_meta = all_meta
+
+    selected_courses.to_csv(output_path / 'courses.csv', index=False)
+    selected_students.to_csv(output_path / 'students.csv', index=False)
+    selected_enrollments.to_csv(output_path / 'enrollments.csv', index=False)
+    pd.DataFrame(selected_adjacency).to_csv(output_path / 'conflict_adjacency.csv', index=False)
+
+    metadata = {
+        'source': 'csv',
+        'input_csv': str(input_csv),
+        'filters': {
+            'registration_status': 'Approved',
+            'course_classification': 'Theory',
+            'academic_sessions': ['JUL-NOV 2025', 'WINTER 2025'],
+            'excluded_semesters': ['I', 'II']
+        },
+        'adjacency_mode_selected': adjacency_mode,
+        'major_graph': major_meta,
+        'all_graph': all_meta,
+        'selected_graph': selected_meta
+    }
+
+    with open(output_path / 'metadata.json', 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"✓ Rows after filters (all): {len(all_rows)}")
+    print(f"✓ Rows after filters (major): {len(major_rows)}")
+    print(f"✓ Major graph: {major_meta['num_courses']} courses, {major_meta['num_conflicts']} edges")
+    print(f"✓ All graph: {all_meta['num_courses']} courses, {all_meta['num_conflicts']} edges")
+    print(f"✓ Selected '{adjacency_mode}' graph for solver")
+    print(f"✓ Saved dataset to: {output_dir}")
+
+    return selected_courses, selected_adjacency, metadata
+
+
 # ============================================================================
 # STEP 2: BUILD QUBO
 # ============================================================================
@@ -397,68 +599,7 @@ def build_qubo(adjacency, K, courses_df=None,
 
 
 # ============================================================================
-# STEP 3: SOLVE WITH QAOA
-# ============================================================================
-
-def solve_qaoa(Q, reps=2, maxiter=100):
-    """Solve QUBO with QAOA"""
-    
-    if not QISKIT_AVAILABLE:
-        print("\n✗ Qiskit not installed. Cannot use QAOA backend.")
-        return None
-    
-    print("\n" + "="*60)
-    print("SOLVING WITH QAOA (IBM Qiskit)")
-    print("="*60)
-    print(f"Variables: {Q.shape[0]}")
-    print(f"QAOA depth: {reps}")
-    print(f"Max iterations: {maxiter}")
-    
-    num_vars = Q.shape[0]
-    
-    # Build QuadraticProgram
-    qp = QuadraticProgram()
-    for i in range(num_vars):
-        qp.binary_var(name=f'x{i}')
-    
-    linear = {}
-    quadratic = {}
-    
-    for i in range(num_vars):
-        if Q[i, i] != 0:
-            linear[f'x{i}'] = Q[i, i]
-        for j in range(i+1, num_vars):
-            if Q[i, j] != 0:
-                quadratic[(f'x{i}', f'x{j}')] = 2 * Q[i, j]
-    
-    qp.minimize(linear=linear, quadratic=quadratic)
-    
-    # Solve
-    sampler = Sampler()
-    optimizer = COBYLA(maxiter=maxiter)
-    qaoa = QAOA(sampler=sampler, optimizer=optimizer, reps=reps)
-    qaoa_optimizer = MinimumEigenOptimizer(qaoa)
-    
-    print("\n⏳ Running QAOA...")
-    start_time = time.time()
-    
-    result = qaoa_optimizer.solve(qp)
-    
-    runtime = time.time() - start_time
-    
-    print(f"✓ Completed in {runtime:.2f}s")
-    print(f"Energy: {result.fval:.2f}")
-    
-    return {
-        'solution': result.x,
-        'energy': result.fval,
-        'runtime': runtime,
-        'backend': 'qaoa'
-    }
-
-
-# ============================================================================
-# STEP 4: SOLVE WITH NEAL
+# STEP 3: SOLVE WITH NEAL
 # ============================================================================
 
 def solve_neal(Q, num_reads=1000):
@@ -837,8 +978,8 @@ Examples:
   # With visualization
   python run_exam_scheduler.py --courses 10 --k 4 --visualize
   
-  # Compare backends (QAOA vs Neal)
-  python run_exam_scheduler.py --courses 8 --k 3 --backend both
+    # Real CSV with dual adjacency graphs (major/all), solve with Neal
+    python run_exam_scheduler.py --input-csv "../Student Course (Jul-Nov 2025 and Winter 2025).csv" --adjacency-mode all --k 16
         """
     )
     
@@ -856,16 +997,17 @@ Examples:
     
     parser.add_argument('--conflict-pct', type=float, default=40.0,
                        help='Conflict percentage: edge density 0-100 (default: 40.0)')
+
+    parser.add_argument('--input-csv', type=str, default=None,
+                       help='Path to university enrollment CSV (uses Approved+Theory filters and builds major/all adjacency)')
+
+    parser.add_argument('--adjacency-mode', type=str, default='all',
+                       choices=['major', 'all', 'both'],
+                       help='When --input-csv is used, choose graph for solver: major, all, or both (default: all)')
     
     parser.add_argument('--backend', type=str, default='neal',
-                       choices=['qaoa', 'neal', 'both'],
-                       help='Solver backend (default: neal)')
-    
-    parser.add_argument('--reps', type=int, default=2,
-                       help='QAOA circuit depth (default: 2)')
-    
-    parser.add_argument('--maxiter', type=int, default=100,
-                       help='QAOA optimizer iterations (default: 100)')
+                       choices=['neal'],
+                       help='Solver backend (Neal only)')
     
     parser.add_argument('--num-reads', type=int, default=1000,
                        help='Neal number of reads (default: 1000)')
@@ -894,7 +1036,7 @@ Examples:
 def get_user_input(args):
     """Get inputs from command-line or interactive prompts"""
     
-    if args.courses is None:
+    if args.input_csv is None and args.courses is None:
         print("\n" + "="*60)
         print("INTERACTIVE MODE")
         print("="*60)
@@ -916,147 +1058,159 @@ def main():
     print("\n" + "="*60)
     print("EXAM SCHEDULING PIPELINE")
     print("="*60)
-    print(f"Courses: {args.courses}")
-    print(f"Students: {args.students}")
+    if args.input_csv:
+        print(f"Input CSV: {args.input_csv}")
+        print(f"Adjacency mode: {args.adjacency_mode}")
+    else:
+        print(f"Courses: {args.courses}")
+        print(f"Students: {args.students}")
     print(f"K (time slots): {args.k}")
-    print(f"Conflict percentage: {args.conflict_pct:.1f}%")
-    print(f"Backend: {args.backend.upper()}")
+    if not args.input_csv:
+        print(f"Conflict percentage: {args.conflict_pct:.1f}%")
+    print("Backend: NEAL")
     print(f"λ1={args.lambda1}  λ2={args.lambda2}  λ3={args.lambda3}  λ4={args.lambda4}")
     if args.capacity:
         print(f"Slot capacity: {args.capacity}")
     
     # Create output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path('./output') / f'run_{timestamp}'
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Step 1: Generate dataset
-    courses_df, adjacency, metadata = generate_dataset(
-        num_courses=args.courses,
-        num_students=args.students,
-        avg_courses_per_student=args.avg_courses,
-        conflict_pct=args.conflict_pct,
-        output_dir=output_dir
-    )
-    
-    # Visualize conflict graph (if requested)
-    if args.visualize:
-        print("\n" + "="*60)
-        print("GENERATING VISUALIZATIONS")
-        print("="*60)
-        visualize_adjacency_matrix(adjacency, output_dir, args.courses)
-        visualize_conflict_graph(adjacency, output_dir, args.courses)
-    
-    # Step 2: Build QUBO
-    Q = build_qubo(
-        adjacency,
-        K=args.k,
-        courses_df=courses_df,
-        lambda1=args.lambda1,
-        lambda2=args.lambda2,
-        lambda3=args.lambda3,
-        lambda4=args.lambda4,
-        capacity=args.capacity
-    )
-    np.save(output_dir / 'qubo_matrix.npy', Q)
-    
-    # Step 3: Solve
-    results = {}
-    
-    if args.backend in ['qaoa', 'both']:
-        result = solve_qaoa(Q, reps=args.reps, maxiter=args.maxiter)
-        if result:
-            results['qaoa'] = result
-    
-    if args.backend in ['neal', 'both']:
-        result = solve_neal(Q, num_reads=args.num_reads)
-        if result:
-            results['neal'] = result
-    
-    if not results:
-        print("\n✗ No backends available!")
-        return
-    
-    # Step 4: Validate and display results
-    print("\n" + "="*60)
-    print("RESULTS")
-    print("="*60)
-    
-    for backend_name, result in results.items():
-        print(f"\n{backend_name.upper()}")
-        print("-" * 60)
-        
-        coloring = decode_solution(result['solution'], args.courses, args.k)
-        is_valid, num_conflicts, violations = validate_solution(
-            coloring, adjacency, args.courses
+    root_output_dir = Path('./output') / f'run_{timestamp}'
+    root_output_dir.mkdir(parents=True, exist_ok=True)
+
+    jobs = []
+    if args.input_csv:
+        modes = ['major', 'all'] if args.adjacency_mode == 'both' else [args.adjacency_mode]
+        for mode in modes:
+            mode_output_dir = root_output_dir / mode
+            mode_output_dir.mkdir(parents=True, exist_ok=True)
+            courses_df, adjacency, metadata = generate_dataset_from_csv(
+                input_csv=args.input_csv,
+                output_dir=mode_output_dir,
+                adjacency_mode=mode
+            )
+            jobs.append((mode, mode_output_dir, courses_df, adjacency, metadata))
+    else:
+        courses_df, adjacency, metadata = generate_dataset(
+            num_courses=args.courses,
+            num_students=args.students,
+            avg_courses_per_student=args.avg_courses,
+            conflict_pct=args.conflict_pct,
+            output_dir=root_output_dir
         )
-        
-        print(f"Runtime: {result['runtime']:.2f}s")
-        print(f"Energy: {result['energy']:.2f}")
-        print(f"Valid: {'✓ YES' if is_valid else '✗ NO'}")
-        print(f"Conflicts: {num_conflicts}")
-        print(f"Exams assigned: {len(coloring)}/{args.courses}")
-        print(f"Colors used: {len(set(coloring.values()))}/{args.k}")
-        
-        # Save results
-        result_data = {
-            'backend': backend_name,
-            'num_courses': args.courses,
-            'num_students': args.students,
-            'k': args.k,
-            'avg_courses_per_student': args.avg_courses,
-            'runtime_seconds': result['runtime'],
-            'energy': float(result['energy']),
-            'is_valid': is_valid,
-            'num_conflicts': num_conflicts,
-            'colors_used': len(set(coloring.values())),
-            'coloring': {str(k): int(v) for k, v in coloring.items()}
-        }
-        
-        with open(output_dir / f'{backend_name}_results.json', 'w') as f:
-            json.dump(result_data, f, indent=2)
-        
-        # Generate timetable if valid
-        if is_valid:
-            timetable = generate_timetable(coloring, courses_df, args.k)
-            timetable.to_csv(output_dir / f'timetable_{backend_name}.csv', index=False)
-            print(f"\n✓ Saved timetable to: {output_dir}/timetable_{backend_name}.csv")
-            
-            # Visualize timetable (if requested)
-            if args.visualize:
-                visualize_timetable(coloring, adjacency, courses_df, args.k, output_dir)
-        else:
-            print(f"\n⚠ Solution invalid. First 3 conflicts:")
-            for v in violations[:3]:
-                print(f"  - {v}")
-    
-    # Summary
-    print("\n" + "="*60)
-    print("PIPELINE COMPLETE")
-    print("="*60)
-    print(f"Output directory: {output_dir}")
-    print(f"Files generated:")
-    print(f"  - courses.csv (dataset)")
-    print(f"  - conflict_adjacency.csv (conflict graph)")
-    print(f"  - qubo_matrix.npy (QUBO)")
-    print(f"  - *_results.json (solver outputs)")
-    if any(validate_solution(decode_solution(res['solution'], args.courses, args.k), 
-                            adjacency, args.courses)[0] 
-           for res in results.values()):
-        print(f"  - timetable_*.csv (valid schedules)")
-    
-    # Comparison if both backends used
-    if len(results) > 1:
+        jobs.append(('random', root_output_dir, courses_df, adjacency, metadata))
+
+    for mode, output_dir, courses_df, adjacency, metadata in jobs:
+        num_courses = len(courses_df)
+
         print("\n" + "="*60)
-        print("BACKEND COMPARISON")
+        print(f"RUNNING SOLVER FOR MODE: {mode.upper()}")
         print("="*60)
-        for name, res in results.items():
-            col = decode_solution(res['solution'], args.courses, args.k)
-            val, conf, _ = validate_solution(col, adjacency, args.courses)
-            print(f"{name.upper():10s} | {res['runtime']:6.2f}s | "
-                  f"{'✓ VALID' if val else '✗ INVALID':10s} | "
-                  f"Conflicts: {conf}")
 
+        # Visualize conflict graph (if requested)
+        if args.visualize:
+            print("\n" + "="*60)
+            print("GENERATING VISUALIZATIONS")
+            print("="*60)
+            visualize_adjacency_matrix(adjacency, output_dir, num_courses)
+            visualize_conflict_graph(adjacency, output_dir, num_courses)
 
+        # Step 2: Build QUBO
+        Q = build_qubo(
+            adjacency,
+            K=args.k,
+            courses_df=courses_df,
+            lambda1=args.lambda1,
+            lambda2=args.lambda2,
+            lambda3=args.lambda3,
+            lambda4=args.lambda4,
+            capacity=args.capacity
+        )
+        np.save(output_dir / 'qubo_matrix.npy', Q)
+
+        # Step 3: Solve (Neal only)
+        result = solve_neal(Q, num_reads=args.num_reads)
+        if not result:
+            print("\n✗ Neal backend unavailable!")
+            continue
+        results = {'neal': result}
+
+        # Step 4: Validate and display results
+        print("\n" + "="*60)
+        print("RESULTS")
+        print("="*60)
+
+        for backend_name, result in results.items():
+            print(f"\n{backend_name.upper()}")
+            print("-" * 60)
+
+            coloring = decode_solution(result['solution'], num_courses, args.k)
+            is_valid, num_conflicts, violations = validate_solution(
+                coloring, adjacency, num_courses
+            )
+
+            print(f"Runtime: {result['runtime']:.2f}s")
+            print(f"Energy: {result['energy']:.2f}")
+            print(f"Valid: {'✓ YES' if is_valid else '✗ NO'}")
+            print(f"Conflicts: {num_conflicts}")
+            print(f"Exams assigned: {len(coloring)}/{num_courses}")
+            print(f"Colors used: {len(set(coloring.values()))}/{args.k}")
+
+            # Save results
+            result_data = {
+                'backend': backend_name,
+                'adjacency_mode': mode,
+                'num_courses': num_courses,
+                'num_students': args.students,
+                'k': args.k,
+                'avg_courses_per_student': args.avg_courses,
+                'runtime_seconds': result['runtime'],
+                'energy': float(result['energy']),
+                'is_valid': is_valid,
+                'num_conflicts': num_conflicts,
+                'colors_used': len(set(coloring.values())),
+                'coloring': {str(k): int(v) for k, v in coloring.items()}
+            }
+
+            with open(output_dir / f'{backend_name}_results.json', 'w') as f:
+                json.dump(result_data, f, indent=2)
+
+            # Generate timetable if valid
+            if is_valid:
+                timetable = generate_timetable(coloring, courses_df, args.k)
+                timetable.to_csv(output_dir / f'timetable_{backend_name}.csv', index=False)
+                print(f"\n✓ Saved timetable to: {output_dir}/timetable_{backend_name}.csv")
+
+                # Visualize timetable (if requested)
+                if args.visualize:
+                    visualize_timetable(coloring, adjacency, courses_df, args.k, output_dir)
+            else:
+                print(f"\n⚠ Solution invalid. First 3 conflicts:")
+                for v in violations[:3]:
+                    print(f"  - {v}")
+
+        # Summary per mode
+        print("\n" + "="*60)
+        print("PIPELINE COMPLETE")
+        print("="*60)
+        print(f"Output directory: {output_dir}")
+        print(f"Files generated:")
+        print(f"  - courses.csv (dataset)")
+        print(f"  - conflict_adjacency.csv (conflict graph)")
+        print(f"  - qubo_matrix.npy (QUBO)")
+        print(f"  - *_results.json (solver outputs)")
+        if any(validate_solution(decode_solution(res['solution'], num_courses, args.k),
+                                 adjacency, num_courses)[0]
+               for res in results.values()):
+            print(f"  - timetable_*.csv (valid schedules)")
+
+    if args.input_csv and args.adjacency_mode == 'both':
+        print("\n" + "="*60)
+        print("BOTH-MODE RUN COMPLETE")
+        print("="*60)
+        print(f"Root output directory: {root_output_dir}")
+        print(f"Subfolders:")
+        print(f"  - {root_output_dir / 'major'}")
+        print(f"  - {root_output_dir / 'all'}")
+    
 if __name__ == '__main__':
     main()

@@ -276,7 +276,7 @@ def build_qubo_slack(adjacency, K, courses_df=None,
     Constraint 1 (lambda1): Each exam assigned to exactly one slot (one-hot)
     Constraint 2 (lambda2): Conflicting exams must be in different slots (hard)
     Constraint 3 (lambda3): Same-year exams should not be in consecutive slots (soft)
-    Constraint 4 (lambda4): Total enrollment per slot should not exceed capacity (soft, with slack)
+    Constraint 4 (lambda4): Total enrollment per slot with coupled slack equality
     
     Args:
         adjacency         : N×N conflict matrix
@@ -285,7 +285,7 @@ def build_qubo_slack(adjacency, K, courses_df=None,
         lambda1           : Penalty for one-hot violation (default 10000)
         lambda2           : Penalty for conflict in same slot (default 5000)
         lambda3           : Penalty for same-year exams in consecutive slots (default 500)
-        lambda4           : Penalty for each slack variable active (default 200)
+        lambda4           : Penalty weight for coupled capacity equality (default 200)
         capacity          : Max total enrollment allowed per slot (default: auto)
         max_slack_units   : Maximum slack units per slot (default: auto = ceil(max_enrollment))
     """
@@ -334,7 +334,7 @@ def build_qubo_slack(adjacency, K, courses_df=None,
         return exam * K + color
     
     def slack_var_idx(slot, unit):
-        """Index for slack variable s_ku (overflow unit u in slot k)"""
+        """Index for unit-weight slack variable s_ku in slot k"""
         return num_exam_vars + slot * max_slack_units + unit
     
     # -----------------------------------------------------------------------
@@ -402,29 +402,62 @@ def build_qubo_slack(adjacency, K, courses_df=None,
         print("Skipping C3: no course year data or lambda3=0")
     
     # -----------------------------------------------------------------------
-    # Constraint 4: Slot capacity with SLACK VARIABLES (Option A)
-    # 
-    # For each slot k, we need: Σᵢ eᵢ·xᵢₖ ≤ C + M·Σᵤ s_ku
-    # where s_ku = 1 means overflow unit u is "used" in slot k
-    # 
-    # Rewritten as:
-    # E4 = λ4 × Σₖ Σᵤ s_ku
-    # (This penalizes activating slack variables; we don't directly enforce
-    #  the enrollment constraint in QUBO, just penalize slack activation)
-    # 
-    # The constraint could be better enforced with auxiliary variables,
-    # but for now, we just penalize slack variables directly.
+    # Constraint 4: Slot capacity with coupled slack variables
+    #
+    # For each slot k, enforce:
+    #   E4_k = λ4 * (Σᵢ eᵢ xᵢₖ + Σᵤ sₖᵤ - C)^2
+    # where sₖᵤ are unit-weight binary slack bits.
+    #
+    # Expansion for each slot k:
+    #   Diagonal x terms:      λ4 * (eᵢ² - 2 C eᵢ)
+    #   x-x off-diagonal:      2 λ4 * eᵢ eⱼ
+    #   Diagonal s terms:      λ4 * (1 - 2 C)
+    #   s-s off-diagonal:      2 λ4
+    #   x-s cross terms:       2 λ4 * eᵢ
+    # Constant λ4*C² is omitted (does not affect argmin).
     # -----------------------------------------------------------------------
     if courses_df is not None and lambda4 > 0:
-        print(f"Adding C4: Slot capacity via slack variables (λ4={lambda4})...")
+        print(f"Adding C4: Coupled capacity equality with slack bits (C={capacity}, λ4={lambda4})...")
         
-        # Simple approach: penalize each slack variable
         for k in range(K):
+            exam_indices = [exam_var_idx(i, k) for i in range(n)]
+            slack_indices = [slack_var_idx(k, u) for u in range(max_slack_units)]
+
+            # Diagonal exam terms and exam-exam off-diagonal terms
+            for i in range(n):
+                idx_i = exam_indices[i]
+                ei = enrollments[i]
+                Q[idx_i, idx_i] += lambda4 * (ei**2 - 2 * capacity * ei)
+
+                for j in range(i + 1, n):
+                    idx_j = exam_indices[j]
+                    ej = enrollments[j]
+                    val = 2 * lambda4 * ei * ej
+                    Q[idx_i, idx_j] += val
+                    Q[idx_j, idx_i] += val
+
+            # Diagonal slack terms and slack-slack off-diagonal terms
             for u in range(max_slack_units):
-                idx = slack_var_idx(k, u)
-                Q[idx, idx] += lambda4
-        
-        print(f"✓ Slack penalty added: {K * max_slack_units} slack variables")
+                s_u = slack_indices[u]
+                Q[s_u, s_u] += lambda4 * (1 - 2 * capacity)
+
+                for v in range(u + 1, max_slack_units):
+                    s_v = slack_indices[v]
+                    val = 2 * lambda4
+                    Q[s_u, s_v] += val
+                    Q[s_v, s_u] += val
+
+            # Exam-slack cross terms
+            for i in range(n):
+                idx_i = exam_indices[i]
+                ei = enrollments[i]
+                val = 2 * lambda4 * ei
+                for u in range(max_slack_units):
+                    s_u = slack_indices[u]
+                    Q[idx_i, s_u] += val
+                    Q[s_u, idx_i] += val
+
+        print(f"✓ Coupled capacity terms added with {K * max_slack_units} slack bits")
     else:
         print("Skipping C4: lambda4=0")
     
@@ -908,7 +941,7 @@ Examples:
                        help='Penalty: same-year exams in consecutive slots (default: 500, set 0 to disable)')
     
     parser.add_argument('--lambda4', type=float, default=200,
-                       help='Penalty: each slack variable active (default: 200, set 0 to disable)')
+                       help='Penalty: coupled capacity equality with slack bits (default: 200, set 0 to disable)')
     
     parser.add_argument('--capacity', type=int, default=None,
                        help='Max total enrollment per slot (default: auto = mean_enrollment × N/K × 1.2)')

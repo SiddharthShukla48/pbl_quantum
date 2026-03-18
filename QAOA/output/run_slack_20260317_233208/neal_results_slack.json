@@ -1,0 +1,34 @@
+{
+  "backend": "neal",
+  "version": "slack_variables",
+  "num_courses": 10,
+  "num_students": 80,
+  "k": 5,
+  "avg_courses_per_student": 4,
+  "capacity": 120,
+  "max_slack_units": 59,
+  "runtime_seconds": 14.420588970184326,
+  "energy": -14484000.0,
+  "is_valid": true,
+  "num_conflicts": 0,
+  "colors_used": 5,
+  "slack_usage": {
+    "0": 40,
+    "1": 32,
+    "2": 23,
+    "3": 40,
+    "4": 30
+  },
+  "coloring": {
+    "0": 1,
+    "1": 2,
+    "2": 3,
+    "3": 4,
+    "4": 0,
+    "5": 2,
+    "6": 1,
+    "7": 4,
+    "8": 3,
+    "9": 0
+  }
+}
