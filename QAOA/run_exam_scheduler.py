@@ -94,6 +94,9 @@ def generate_random_adjacency(num_courses, conflict_pct):
     Returns:
         adjacency: Symmetric binary adjacency matrix
     """
+    if conflict_pct < 0 or conflict_pct > 100:
+        raise ValueError(f"conflict_pct must be in [0, 100], got {conflict_pct}")
+
     adjacency = np.zeros((num_courses, num_courses), dtype=int)
     
     # Total possible edges in undirected graph
@@ -449,8 +452,14 @@ def generate_dataset_from_csv(input_csv, output_dir, adjacency_mode='all', max_r
 
     print(f"✓ Rows after filters (all): {len(all_rows)}")
     print(f"✓ Rows after filters (major): {len(major_rows)}")
-    print(f"✓ Major graph: {major_meta['num_courses']} courses, {major_meta['num_conflicts']} edges")
-    print(f"✓ All graph: {all_meta['num_courses']} courses, {all_meta['num_conflicts']} edges")
+    print(
+        f"✓ Major graph: {major_meta['num_courses']} courses, "
+        f"{major_meta['num_conflicts']} edges ({major_meta['density']:.2f}% density)"
+    )
+    print(
+        f"✓ All graph: {all_meta['num_courses']} courses, "
+        f"{all_meta['num_conflicts']} edges ({all_meta['density']:.2f}% density)"
+    )
     print(f"✓ Selected '{adjacency_mode}' graph for solver")
     print(f"✓ Saved dataset to: {output_dir}")
 
@@ -603,7 +612,7 @@ def build_qubo(adjacency, K, courses_df=None,
     #   C = room capacity
     #
     # Slack bits use binary (exponential) weights: 1, 2, 4, 8, ..., 2^(num_slack_bits-1)
-    # This efficiently encodes overflow values using minimal variables
+    # This efficiently encodes residual-capacity slack values using minimal variables
     #
     # Expansion of (L_k + S_k - C)²:
     #   L_k = Σᵢ eᵢ·xᵢₖ  (load from course assignments)
@@ -776,14 +785,30 @@ def decode_solution(solution, num_courses, K, num_slack_bits=None):
     return coloring
 
 
-def validate_solution(coloring, adjacency, num_courses):
-    """Validate solution"""
+def validate_solution(coloring, adjacency, num_courses, solution=None, K=None):
+    """Validate solution with conflict checks and optional strict one-hot checks."""
     
     violations = []
     
-    # Check all exams assigned
+    # Check all exams assigned in decoded coloring
     if len(coloring) != num_courses:
         violations.append(f"Only {len(coloring)}/{num_courses} exams assigned")
+
+    # Strict one-hot check from raw solution vector when available.
+    if solution is not None and K is not None:
+        onehot_violations = 0
+        for i in range(num_courses):
+            start = i * K
+            end = start + K
+            ones = int(np.sum(solution[start:end]))
+            if ones != 1:
+                onehot_violations += 1
+                if onehot_violations <= 5:
+                    violations.append(f"One-hot violation: Exam {i} has {ones} active slots")
+        if onehot_violations > 5:
+            violations.append(
+                f"... and {onehot_violations - 5} more one-hot violations"
+            )
     
     # Check conflicts
     conflict_count = 0
@@ -1230,13 +1255,28 @@ def main():
 
             coloring = decode_solution(result['solution'], num_courses, args.k)
             is_valid, num_conflicts, violations = validate_solution(
-                coloring, adjacency, num_courses
+                coloring, adjacency, num_courses,
+                solution=result['solution'], K=args.k
             )
 
             print(f"Runtime: {result['runtime']:.2f}s")
             print(f"Energy: {result['energy']:.2f}")
             print(f"Valid: {'✓ YES' if is_valid else '✗ NO'}")
-            print(f"Conflicts: {num_conflicts}")
+            total_conflict_edges = int(np.sum(adjacency) // 2)
+            violated_conflict_pct = (
+                (num_conflicts / total_conflict_edges) * 100.0
+                if total_conflict_edges > 0 else 0.0
+            )
+            if args.input_csv:
+                graph_conflict_density_pct = float(
+                    metadata.get('selected_graph', {}).get('density', 0.0)
+                )
+            else:
+                graph_conflict_density_pct = float(metadata.get('density', 0.0))
+            print(f"Graph conflicts (dataset edges): {total_conflict_edges}")
+            print(f"Graph conflict density: {graph_conflict_density_pct:.2f}%")
+            print(f"Solution conflict violations: {num_conflicts}")
+            print(f"Solution conflict violations (% of graph edges): {violated_conflict_pct:.2f}%")
             print(f"Exams assigned: {len(coloring)}/{num_courses}")
             print(f"Colors used: {len(set(coloring.values()))}/{args.k}")
 
@@ -1265,7 +1305,11 @@ def main():
                 'runtime_seconds': result['runtime'],
                 'energy': float(result['energy']),
                 'is_valid': is_valid,
+                'graph_conflict_edges': total_conflict_edges,
+                'solution_conflict_violations': num_conflicts,
                 'num_conflicts': num_conflicts,
+                'graph_conflict_density_pct': graph_conflict_density_pct,
+                'conflict_violations_pct': violated_conflict_pct,
                 'colors_used': len(set(coloring.values())),
                 'coloring': {str(k): int(v) for k, v in coloring.items()}
             }
@@ -1298,7 +1342,8 @@ def main():
         print(f"  - qubo_matrix.npy (QUBO)")
         print(f"  - *_results.json (solver outputs)")
         if any(validate_solution(decode_solution(res['solution'], num_courses, args.k),
-                                 adjacency, num_courses)[0]
+                     adjacency, num_courses,
+                     solution=res['solution'], K=args.k)[0]
                for res in results.values()):
             print(f"  - timetable_*.csv (valid schedules)")
 

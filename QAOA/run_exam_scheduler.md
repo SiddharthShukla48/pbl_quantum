@@ -286,7 +286,11 @@ $$
 \text{violations} = \sum_{i<j} A_{ij}\,\mathbf{1}[slot(i)=slot(j)]
 $$
 
-A solution is valid if violations = 0 and all exams are assigned.
+A solution is valid if all of the following hold:
+
+1. Every exam has exactly one active slot in the raw binary assignment (strict one-hot).
+2. Every exam is decodable to a slot assignment.
+3. No conflicting pair shares the same slot.
 
 ---
 
@@ -304,7 +308,11 @@ Each `neal_results.json` contains:
 - runtime_seconds
 - energy
 - is_valid
+- graph_conflict_edges
+- solution_conflict_violations
 - num_conflicts
+- graph_conflict_density_pct
+- conflict_violations_pct
 - colors_used
 - coloring map
 
