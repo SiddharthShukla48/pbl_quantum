@@ -785,8 +785,9 @@ def decode_solution(solution, num_courses, K, num_slack_bits=None):
     return coloring
 
 
-def validate_solution(coloring, adjacency, num_courses, solution=None, K=None):
-    """Validate solution with conflict checks and optional strict one-hot checks."""
+def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
+                      courses_df=None, capacity=None):
+    """Validate solution across C1-C4 checks and return detailed metrics."""
     
     violations = []
     
@@ -810,7 +811,7 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None):
                 f"... and {onehot_violations - 5} more one-hot violations"
             )
     
-    # Check conflicts
+    # Check conflicts (C2)
     conflict_count = 0
     for i in range(num_courses):
         for j in range(i+1, num_courses):
@@ -819,10 +820,58 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None):
                     if coloring[i] == coloring[j]:
                         conflict_count += 1
                         violations.append(f"Conflict: Exams {i},{j} both in slot {coloring[i]}")
+
+    # Check C3: same-year exams in consecutive slots
+    c3_consecutive_violations = 0
+    if courses_df is not None:
+        years = courses_df['year'].values
+        for i in range(num_courses):
+            for j in range(i + 1, num_courses):
+                if years[i] == years[j] and i in coloring and j in coloring:
+                    if abs(int(coloring[i]) - int(coloring[j])) == 1:
+                        c3_consecutive_violations += 1
+                        if c3_consecutive_violations <= 5:
+                            violations.append(
+                                f"C3 violation: Exams {i},{j} (year={years[i]}) in consecutive slots "
+                                f"{coloring[i]} and {coloring[j]}"
+                            )
+        if c3_consecutive_violations > 5:
+            violations.append(
+                f"... and {c3_consecutive_violations - 5} more C3 violations"
+            )
+
+    # Check C4: per-slot capacity
+    c4_slots_over_capacity = 0
+    c4_total_overflow = 0.0
+    c4_max_overflow = 0.0
+    if courses_df is not None and capacity is not None and K is not None:
+        enrollments = courses_df['enrollment'].values.astype(float)
+        slot_loads = np.zeros(int(K), dtype=float)
+
+        for exam, slot in coloring.items():
+            slot_loads[int(slot)] += enrollments[int(exam)]
+
+        over_mask = slot_loads > float(capacity)
+        c4_slots_over_capacity = int(np.sum(over_mask))
+        if c4_slots_over_capacity > 0:
+            overflow_vals = slot_loads[over_mask] - float(capacity)
+            c4_total_overflow = float(np.sum(overflow_vals))
+            c4_max_overflow = float(np.max(overflow_vals))
+            violations.append(
+                f"C4 violation: {c4_slots_over_capacity} slots exceed capacity {capacity}; "
+                f"max overflow={c4_max_overflow:.2f}, total overflow={c4_total_overflow:.2f}"
+            )
     
     is_valid = len(violations) == 0
-    
-    return is_valid, conflict_count, violations
+
+    metrics = {
+        'c3_consecutive_violations': int(c3_consecutive_violations),
+        'c4_slots_over_capacity': int(c4_slots_over_capacity),
+        'c4_total_overflow': float(c4_total_overflow),
+        'c4_max_overflow': float(c4_max_overflow)
+    }
+
+    return is_valid, conflict_count, violations, metrics
 
 
 # ============================================================================
@@ -1254,9 +1303,10 @@ def main():
             print("-" * 60)
 
             coloring = decode_solution(result['solution'], num_courses, args.k)
-            is_valid, num_conflicts, violations = validate_solution(
+            is_valid, num_conflicts, violations, soft_metrics = validate_solution(
                 coloring, adjacency, num_courses,
-                solution=result['solution'], K=args.k
+                solution=result['solution'], K=args.k,
+                courses_df=courses_df, capacity=args.capacity
             )
 
             print(f"Runtime: {result['runtime']:.2f}s")
@@ -1277,6 +1327,10 @@ def main():
             print(f"Graph conflict density: {graph_conflict_density_pct:.2f}%")
             print(f"Solution conflict violations: {num_conflicts}")
             print(f"Solution conflict violations (% of graph edges): {violated_conflict_pct:.2f}%")
+            print(f"C3 consecutive-slot violations: {soft_metrics['c3_consecutive_violations']}")
+            print(f"C4 slots over capacity: {soft_metrics['c4_slots_over_capacity']}")
+            print(f"C4 max overflow: {soft_metrics['c4_max_overflow']:.2f}")
+            print(f"C4 total overflow: {soft_metrics['c4_total_overflow']:.2f}")
             print(f"Exams assigned: {len(coloring)}/{num_courses}")
             print(f"Colors used: {len(set(coloring.values()))}/{args.k}")
 
@@ -1310,6 +1364,10 @@ def main():
                 'num_conflicts': num_conflicts,
                 'graph_conflict_density_pct': graph_conflict_density_pct,
                 'conflict_violations_pct': violated_conflict_pct,
+                'c3_consecutive_violations': soft_metrics['c3_consecutive_violations'],
+                'c4_slots_over_capacity': soft_metrics['c4_slots_over_capacity'],
+                'c4_max_overflow': soft_metrics['c4_max_overflow'],
+                'c4_total_overflow': soft_metrics['c4_total_overflow'],
                 'colors_used': len(set(coloring.values())),
                 'coloring': {str(k): int(v) for k, v in coloring.items()}
             }
@@ -1343,7 +1401,8 @@ def main():
         print(f"  - *_results.json (solver outputs)")
         if any(validate_solution(decode_solution(res['solution'], num_courses, args.k),
                      adjacency, num_courses,
-                     solution=res['solution'], K=args.k)[0]
+                     solution=res['solution'], K=args.k,
+                     courses_df=courses_df, capacity=args.capacity)[0]
                for res in results.values()):
             print(f"  - timetable_*.csv (valid schedules)")
 

@@ -313,6 +313,10 @@ Each `neal_results.json` contains:
 - num_conflicts
 - graph_conflict_density_pct
 - conflict_violations_pct
+- c3_consecutive_violations
+- c4_slots_over_capacity
+- c4_max_overflow
+- c4_total_overflow
 - colors_used
 - coloring map
 
