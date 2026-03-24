@@ -1,0 +1,257 @@
+{
+  "backend": "neal",
+  "adjacency_mode": "major",
+  "is_valid": false,
+  "summary": {
+    "c1_onehot_violations": 0,
+    "c2_conflict_violations": 8,
+    "c3_consecutive_violations": 28,
+    "c4_slots_over_capacity": 0,
+    "other_violations": 0
+  },
+  "violations": {
+    "c1": [],
+    "c2": [
+      {
+        "exam_i": 15,
+        "exam_j": 20,
+        "slot": 1
+      },
+      {
+        "exam_i": 21,
+        "exam_j": 46,
+        "slot": 7
+      },
+      {
+        "exam_i": 23,
+        "exam_j": 30,
+        "slot": 5
+      },
+      {
+        "exam_i": 24,
+        "exam_j": 45,
+        "slot": 1
+      },
+      {
+        "exam_i": 25,
+        "exam_j": 33,
+        "slot": 9
+      },
+      {
+        "exam_i": 31,
+        "exam_j": 38,
+        "slot": 6
+      },
+      {
+        "exam_i": 32,
+        "exam_j": 43,
+        "slot": 0
+      },
+      {
+        "exam_i": 40,
+        "exam_j": 41,
+        "slot": 8
+      }
+    ],
+    "c3": [
+      {
+        "exam_i": 1,
+        "exam_j": 24,
+        "year": 6,
+        "slot_i": 2,
+        "slot_j": 1
+      },
+      {
+        "exam_i": 4,
+        "exam_j": 48,
+        "year": 4,
+        "slot_i": 8,
+        "slot_j": 7
+      },
+      {
+        "exam_i": 7,
+        "exam_j": 16,
+        "year": 5,
+        "slot_i": 1,
+        "slot_j": 0
+      },
+      {
+        "exam_i": 7,
+        "exam_j": 53,
+        "year": 5,
+        "slot_i": 1,
+        "slot_j": 2
+      },
+      {
+        "exam_i": 8,
+        "exam_j": 23,
+        "year": 6,
+        "slot_i": 4,
+        "slot_j": 5
+      },
+      {
+        "exam_i": 11,
+        "exam_j": 40,
+        "year": 9,
+        "slot_i": 9,
+        "slot_j": 8
+      },
+      {
+        "exam_i": 13,
+        "exam_j": 38,
+        "year": 9,
+        "slot_i": 7,
+        "slot_j": 6
+      },
+      {
+        "exam_i": 13,
+        "exam_j": 40,
+        "year": 9,
+        "slot_i": 7,
+        "slot_j": 8
+      },
+      {
+        "exam_i": 14,
+        "exam_j": 38,
+        "year": 9,
+        "slot_i": 5,
+        "slot_j": 6
+      },
+      {
+        "exam_i": 15,
+        "exam_j": 16,
+        "year": 5,
+        "slot_i": 1,
+        "slot_j": 0
+      },
+      {
+        "exam_i": 15,
+        "exam_j": 53,
+        "year": 5,
+        "slot_i": 1,
+        "slot_j": 2
+      },
+      {
+        "exam_i": 16,
+        "exam_j": 20,
+        "year": 5,
+        "slot_i": 0,
+        "slot_j": 1
+      },
+      {
+        "exam_i": 16,
+        "exam_j": 54,
+        "year": 5,
+        "slot_i": 0,
+        "slot_j": 1
+      },
+      {
+        "exam_i": 20,
+        "exam_j": 53,
+        "year": 5,
+        "slot_i": 1,
+        "slot_j": 2
+      },
+      {
+        "exam_i": 22,
+        "exam_j": 23,
+        "year": 6,
+        "slot_i": 4,
+        "slot_j": 5
+      },
+      {
+        "exam_i": 25,
+        "exam_j": 26,
+        "year": 7,
+        "slot_i": 9,
+        "slot_j": 8
+      },
+      {
+        "exam_i": 30,
+        "exam_j": 31,
+        "year": 8,
+        "slot_i": 5,
+        "slot_j": 6
+      },
+      {
+        "exam_i": 30,
+        "exam_j": 34,
+        "year": 8,
+        "slot_i": 5,
+        "slot_j": 4
+      },
+      {
+        "exam_i": 35,
+        "exam_j": 38,
+        "year": 9,
+        "slot_i": 7,
+        "slot_j": 6
+      },
+      {
+        "exam_i": 35,
+        "exam_j": 40,
+        "year": 9,
+        "slot_i": 7,
+        "slot_j": 8
+      },
+      {
+        "exam_i": 41,
+        "exam_j": 46,
+        "year": 10,
+        "slot_i": 8,
+        "slot_j": 7
+      },
+      {
+        "exam_i": 42,
+        "exam_j": 44,
+        "year": 10,
+        "slot_i": 2,
+        "slot_j": 3
+      },
+      {
+        "exam_i": 42,
+        "exam_j": 45,
+        "year": 10,
+        "slot_i": 2,
+        "slot_j": 1
+      },
+      {
+        "exam_i": 42,
+        "exam_j": 47,
+        "year": 10,
+        "slot_i": 2,
+        "slot_j": 3
+      },
+      {
+        "exam_i": 43,
+        "exam_j": 45,
+        "year": 10,
+        "slot_i": 0,
+        "slot_j": 1
+      },
+      {
+        "exam_i": 48,
+        "exam_j": 51,
+        "year": 4,
+        "slot_i": 7,
+        "slot_j": 8
+      },
+      {
+        "exam_i": 52,
+        "exam_j": 53,
+        "year": 5,
+        "slot_i": 3,
+        "slot_j": 2
+      },
+      {
+        "exam_i": 53,
+        "exam_j": 54,
+        "year": 5,
+        "slot_i": 2,
+        "slot_j": 1
+      }
+    ],
+    "c4": [],
+    "other": []
+  }
+}

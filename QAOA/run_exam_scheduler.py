@@ -790,10 +790,24 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
     """Validate solution across C1-C4 checks and return detailed metrics."""
     
     violations = []
+    violation_details = {
+        'c1': [],
+        'c2': [],
+        'c3': [],
+        'c4': [],
+        'other': []
+    }
     
     # Check all exams assigned in decoded coloring
     if len(coloring) != num_courses:
-        violations.append(f"Only {len(coloring)}/{num_courses} exams assigned")
+        msg = f"Only {len(coloring)}/{num_courses} exams assigned"
+        violations.append(msg)
+        violation_details['other'].append({
+            'type': 'incomplete_assignment',
+            'assigned_exams': int(len(coloring)),
+            'num_courses': int(num_courses),
+            'message': msg
+        })
 
     # Strict one-hot check from raw solution vector when available.
     if solution is not None and K is not None:
@@ -804,6 +818,11 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
             ones = int(np.sum(solution[start:end]))
             if ones != 1:
                 onehot_violations += 1
+                violation_details['c1'].append({
+                    'exam': int(i),
+                    'active_slots': int(ones),
+                    'slot_values': [int(v) for v in solution[start:end]]
+                })
                 if onehot_violations <= 5:
                     violations.append(f"One-hot violation: Exam {i} has {ones} active slots")
         if onehot_violations > 5:
@@ -819,6 +838,11 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
                 if i in coloring and j in coloring:
                     if coloring[i] == coloring[j]:
                         conflict_count += 1
+                        violation_details['c2'].append({
+                            'exam_i': int(i),
+                            'exam_j': int(j),
+                            'slot': int(coloring[i])
+                        })
                         violations.append(f"Conflict: Exams {i},{j} both in slot {coloring[i]}")
 
     # Check C3: same-year exams in consecutive slots
@@ -830,6 +854,13 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
                 if years[i] == years[j] and i in coloring and j in coloring:
                     if abs(int(coloring[i]) - int(coloring[j])) == 1:
                         c3_consecutive_violations += 1
+                        violation_details['c3'].append({
+                            'exam_i': int(i),
+                            'exam_j': int(j),
+                            'year': int(years[i]),
+                            'slot_i': int(coloring[i]),
+                            'slot_j': int(coloring[j])
+                        })
                         if c3_consecutive_violations <= 5:
                             violations.append(
                                 f"C3 violation: Exams {i},{j} (year={years[i]}) in consecutive slots "
@@ -857,6 +888,17 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
             overflow_vals = slot_loads[over_mask] - float(capacity)
             c4_total_overflow = float(np.sum(overflow_vals))
             c4_max_overflow = float(np.max(overflow_vals))
+            over_slots = np.where(over_mask)[0]
+            for slot_idx in over_slots:
+                overflow = float(slot_loads[slot_idx] - float(capacity))
+                exams_in_slot = [int(exam) for exam, slot in coloring.items() if int(slot) == int(slot_idx)]
+                violation_details['c4'].append({
+                    'slot': int(slot_idx),
+                    'slot_load': float(slot_loads[slot_idx]),
+                    'capacity': float(capacity),
+                    'overflow': overflow,
+                    'exams_in_slot': exams_in_slot
+                })
             violations.append(
                 f"C4 violation: {c4_slots_over_capacity} slots exceed capacity {capacity}; "
                 f"max overflow={c4_max_overflow:.2f}, total overflow={c4_total_overflow:.2f}"
@@ -865,13 +907,16 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
     is_valid = len(violations) == 0
 
     metrics = {
+        'c1_onehot_violations': int(len(violation_details['c1'])),
+        'c2_conflict_violations': int(conflict_count),
         'c3_consecutive_violations': int(c3_consecutive_violations),
         'c4_slots_over_capacity': int(c4_slots_over_capacity),
         'c4_total_overflow': float(c4_total_overflow),
-        'c4_max_overflow': float(c4_max_overflow)
+        'c4_max_overflow': float(c4_max_overflow),
+        'other_violations': int(len(violation_details['other']))
     }
 
-    return is_valid, conflict_count, violations, metrics
+    return is_valid, conflict_count, violations, metrics, violation_details
 
 
 # ============================================================================
@@ -1303,7 +1348,7 @@ def main():
             print("-" * 60)
 
             coloring = decode_solution(result['solution'], num_courses, args.k)
-            is_valid, num_conflicts, violations, soft_metrics = validate_solution(
+            is_valid, num_conflicts, violations, soft_metrics, violation_details = validate_solution(
                 coloring, adjacency, num_courses,
                 solution=result['solution'], K=args.k,
                 courses_df=courses_df, capacity=args.capacity
@@ -1325,6 +1370,8 @@ def main():
                 graph_conflict_density_pct = float(metadata.get('density', 0.0))
             print(f"Graph conflicts (dataset edges): {total_conflict_edges}")
             print(f"Graph conflict density: {graph_conflict_density_pct:.2f}%")
+            print(f"C1 one-hot violations: {soft_metrics['c1_onehot_violations']}")
+            print(f"C2 same-slot conflict violations: {soft_metrics['c2_conflict_violations']}")
             print(f"Solution conflict violations: {num_conflicts}")
             print(f"Solution conflict violations (% of graph edges): {violated_conflict_pct:.2f}%")
             print(f"C3 consecutive-slot violations: {soft_metrics['c3_consecutive_violations']}")
@@ -1364,16 +1411,37 @@ def main():
                 'num_conflicts': num_conflicts,
                 'graph_conflict_density_pct': graph_conflict_density_pct,
                 'conflict_violations_pct': violated_conflict_pct,
+                'c1_onehot_violations': soft_metrics['c1_onehot_violations'],
+                'c2_conflict_violations': soft_metrics['c2_conflict_violations'],
                 'c3_consecutive_violations': soft_metrics['c3_consecutive_violations'],
                 'c4_slots_over_capacity': soft_metrics['c4_slots_over_capacity'],
                 'c4_max_overflow': soft_metrics['c4_max_overflow'],
                 'c4_total_overflow': soft_metrics['c4_total_overflow'],
+                'other_violations': soft_metrics['other_violations'],
                 'colors_used': len(set(coloring.values())),
                 'coloring': {str(k): int(v) for k, v in coloring.items()}
             }
 
             with open(output_dir / f'{backend_name}_results.json', 'w') as f:
                 json.dump(result_data, f, indent=2)
+
+            all_conflicts_data = {
+                'backend': backend_name,
+                'adjacency_mode': mode,
+                'is_valid': bool(is_valid),
+                'summary': {
+                    'c1_onehot_violations': int(soft_metrics['c1_onehot_violations']),
+                    'c2_conflict_violations': int(soft_metrics['c2_conflict_violations']),
+                    'c3_consecutive_violations': int(soft_metrics['c3_consecutive_violations']),
+                    'c4_slots_over_capacity': int(soft_metrics['c4_slots_over_capacity']),
+                    'other_violations': int(soft_metrics['other_violations'])
+                },
+                'violations': violation_details
+            }
+            all_conflicts_path = output_dir / f'{backend_name}_all_conflicts.json'
+            with open(all_conflicts_path, 'w') as f:
+                json.dump(all_conflicts_data, f, indent=2)
+            print(f"All conflicts file: {all_conflicts_path}")
 
             # Generate timetable if valid
             if is_valid:
@@ -1399,10 +1467,11 @@ def main():
         print(f"  - conflict_adjacency.csv (conflict graph)")
         print(f"  - qubo_matrix.npy (QUBO)")
         print(f"  - *_results.json (solver outputs)")
+        print(f"  - *_all_conflicts.json (all C1/C2/C3/C4 violations)")
         if any(validate_solution(decode_solution(res['solution'], num_courses, args.k),
                      adjacency, num_courses,
                      solution=res['solution'], K=args.k,
-                     courses_df=courses_df, capacity=args.capacity)[0]
+                 courses_df=courses_df, capacity=args.capacity)[0]
                for res in results.values()):
             print(f"  - timetable_*.csv (valid schedules)")
 
