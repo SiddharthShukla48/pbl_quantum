@@ -554,25 +554,47 @@ def build_qubo(adjacency, K, courses_df=None,
     
     # -----------------------------------------------------------------------
     # Constraint 2: Conflicting exams must be in different slots
-    # E2 = λ2 × Σ_(i,j)∈conflicts Σₖ xᵢₖ · xⱼₖ
+    # E2 = λ2_ij × Σ_(i,j)∈conflicts Σₖ xᵢₖ · xⱼₖ
+    # where λ2_ij is enrollment-aware when enrollment data is available.
     # -----------------------------------------------------------------------
     print("Adding C2: Conflicting exams in different slots...")
     num_conflict_pairs = 0
+
+    # Enrollment-aware C2 weighting: prioritize avoiding conflicts that affect
+    # more students, so any remaining manual fixes tend to be lower impact.
+    if courses_df is not None and 'enrollment' in courses_df.columns:
+        c2_enrollments = courses_df['enrollment'].values.astype(float)
+        c2_max_pair_load = max(1.0, 2.0 * float(np.max(c2_enrollments)))
+        c2_alpha = 4.0
+        print(f"           Enrollment-aware weighting enabled (alpha={c2_alpha:.2f})")
+    else:
+        c2_enrollments = None
+        c2_max_pair_load = 1.0
+        c2_alpha = 0.0
+
     for i in range(n):
         for j in range(i+1, n):
             if adjacency[i, j] > 0:
                 num_conflict_pairs += 1
+
+                if c2_enrollments is not None:
+                    pair_load = float(c2_enrollments[i] + c2_enrollments[j])
+                    pair_norm = pair_load / c2_max_pair_load
+                    lambda2_ij = lambda2 * (1.0 + c2_alpha * pair_norm)
+                else:
+                    lambda2_ij = lambda2
+
                 for c in range(K):
                     idx_i = var_idx(i, c)
                     idx_j = var_idx(j, c)
-                    Q[idx_i, idx_j] += lambda2
-                    Q[idx_j, idx_i] += lambda2
+                    Q[idx_i, idx_j] += lambda2_ij
+                    Q[idx_j, idx_i] += lambda2_ij
     print(f"✓ {num_conflict_pairs} conflict pairs added")
     
     # -----------------------------------------------------------------------
     # Constraint 3: Same-year exams should not be in consecutive slots (soft)
-    # E3 = λ3 × Σ_(i,j):same_year Σₖ (xᵢₖ·xⱼ,ₖ₊₁ + xᵢ,ₖ₊₁·xⱼₖ)
-    # Applied to all pairs where courses_df['year'] matches
+    # E3 = λ3 × Σ_(i,j):same_year_and_conflicting Σₖ (xᵢₖ·xⱼ,ₖ₊₁ + xᵢ,ₖ₊₁·xⱼₖ)
+    # Applied only to same-year pairs that have student-overlap conflict edges.
     # -----------------------------------------------------------------------
     num_consec_pairs = 0
     if courses_df is not None and lambda3 > 0:
@@ -581,7 +603,7 @@ def build_qubo(adjacency, K, courses_df=None,
         
         for i in range(n):
             for j in range(i+1, n):
-                if years[i] == years[j]:
+                if years[i] == years[j] and adjacency[i, j] > 0:
                     num_consec_pairs += 1
                     for k in range(K - 1):  # k and k+1 are consecutive
                         # Exam i in slot k  AND  exam j in slot k+1
@@ -845,13 +867,13 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
                         })
                         violations.append(f"Conflict: Exams {i},{j} both in slot {coloring[i]}")
 
-    # Check C3: same-year exams in consecutive slots
+    # Check C3: same-year conflicting exams in consecutive slots
     c3_consecutive_violations = 0
     if courses_df is not None:
         years = courses_df['year'].values
         for i in range(num_courses):
             for j in range(i + 1, num_courses):
-                if years[i] == years[j] and i in coloring and j in coloring:
+                if years[i] == years[j] and adjacency[i, j] > 0 and i in coloring and j in coloring:
                     if abs(int(coloring[i]) - int(coloring[j])) == 1:
                         c3_consecutive_violations += 1
                         violation_details['c3'].append({
