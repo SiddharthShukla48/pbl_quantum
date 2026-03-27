@@ -941,6 +941,214 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
     return is_valid, conflict_count, violations, metrics, violation_details
 
 
+def build_repair_exam_set(violation_details):
+    """Collect exams that participate in any reported C1-C4 violation."""
+    repair_exams = set()
+
+    for item in violation_details.get('c1', []):
+        repair_exams.add(int(item['exam']))
+
+    for item in violation_details.get('c2', []):
+        repair_exams.add(int(item['exam_i']))
+        repair_exams.add(int(item['exam_j']))
+
+    for item in violation_details.get('c3', []):
+        repair_exams.add(int(item['exam_i']))
+        repair_exams.add(int(item['exam_j']))
+
+    for item in violation_details.get('c4', []):
+        for exam in item.get('exams_in_slot', []):
+            repair_exams.add(int(exam))
+
+    return repair_exams
+
+
+def repair_coloring_bruteforce(
+    coloring,
+    adjacency,
+    courses_df,
+    K,
+    capacity,
+    violation_details,
+    max_repair_exams=18,
+    max_search_nodes=200000
+):
+    """
+    Repair invalid QUBO coloring by brute-forcing only exams in violated constraints.
+
+    Strategy:
+    1. Build repair set from violated exams only.
+    2. Freeze all other exams to their current slots.
+    3. Backtracking search with pruning for C2/C3/C4 hard feasibility.
+    4. Merge repaired subset with frozen assignments.
+    """
+
+    n = adjacency.shape[0]
+    repair_exams = build_repair_exam_set(violation_details)
+
+    if not repair_exams:
+        return {
+            'success': True,
+            'coloring': dict(coloring),
+            'message': 'No violated exams found; nothing to repair.',
+            'repaired_exam_count': 0,
+            'search_nodes': 0
+        }
+
+    if len(repair_exams) > int(max_repair_exams):
+        return {
+            'success': False,
+            'coloring': dict(coloring),
+            'message': (
+                f"Repair set too large ({len(repair_exams)} exams > max_repair_exams={max_repair_exams}); "
+                "skip brute-force repair."
+            ),
+            'repaired_exam_count': int(len(repair_exams)),
+            'search_nodes': 0
+        }
+
+    repair_list = sorted(repair_exams)
+    repair_set = set(repair_list)
+
+    fixed_coloring = {
+        int(exam): int(slot)
+        for exam, slot in coloring.items()
+        if int(exam) not in repair_set
+    }
+
+    years = courses_df['year'].values if courses_df is not None else np.zeros(n, dtype=int)
+    enrollments = (
+        courses_df['enrollment'].values.astype(float)
+        if courses_df is not None and 'enrollment' in courses_df.columns
+        else np.zeros(n, dtype=float)
+    )
+
+    # Pre-compute fixed slot loads for C4 pruning.
+    slot_loads = np.zeros(int(K), dtype=float)
+    if capacity is not None:
+        for exam, slot in fixed_coloring.items():
+            slot_loads[int(slot)] += float(enrollments[int(exam)])
+
+    # Build neighbor lists used by constraints.
+    conflict_neighbors = {
+        i: [j for j in range(n) if adjacency[i, j] > 0 and j != i]
+        for i in repair_list
+    }
+    c3_neighbors = {
+        i: [
+            j for j in range(n)
+            if j != i and years[i] == years[j] and adjacency[i, j] > 0
+        ]
+        for i in repair_list
+    }
+
+    assignment = {}
+    nodes = {'count': 0}
+
+    def is_slot_feasible(exam, slot):
+        # C2 with fixed assignments
+        for nb in conflict_neighbors[exam]:
+            if nb in fixed_coloring and int(fixed_coloring[nb]) == int(slot):
+                return False
+
+        # C2 with partial repair assignments
+        for nb in conflict_neighbors[exam]:
+            if nb in assignment and int(assignment[nb]) == int(slot):
+                return False
+
+        # C3 with fixed assignments (only same-year + conflicting)
+        for nb in c3_neighbors[exam]:
+            if nb in fixed_coloring and abs(int(slot) - int(fixed_coloring[nb])) == 1:
+                return False
+
+        # C3 with partial repair assignments
+        for nb in c3_neighbors[exam]:
+            if nb in assignment and abs(int(slot) - int(assignment[nb])) == 1:
+                return False
+
+        # C4 capacity check
+        if capacity is not None:
+            projected = slot_loads[int(slot)] + float(enrollments[int(exam)])
+            if projected > float(capacity):
+                return False
+
+        return True
+
+    def select_next_exam():
+        """MRV heuristic: choose exam with minimum remaining feasible slots."""
+        remaining = [e for e in repair_list if e not in assignment]
+        best_exam = None
+        best_domain = None
+
+        for exam in remaining:
+            domain = [slot for slot in range(K) if is_slot_feasible(exam, slot)]
+            if best_domain is None or len(domain) < len(best_domain):
+                best_exam = exam
+                best_domain = domain
+            if best_domain is not None and len(best_domain) == 0:
+                break
+
+        return best_exam, (best_domain if best_domain is not None else [])
+
+    def backtrack():
+        if len(assignment) == len(repair_list):
+            return True
+
+        nodes['count'] += 1
+        if nodes['count'] > int(max_search_nodes):
+            return False
+
+        exam, domain = select_next_exam()
+        if exam is None or len(domain) == 0:
+            return False
+
+        for slot in domain:
+            assignment[exam] = int(slot)
+            if capacity is not None:
+                slot_loads[int(slot)] += float(enrollments[int(exam)])
+
+            if backtrack():
+                return True
+
+            if capacity is not None:
+                slot_loads[int(slot)] -= float(enrollments[int(exam)])
+            del assignment[exam]
+
+        return False
+
+    solved = backtrack()
+    if not solved:
+        return {
+            'success': False,
+            'coloring': dict(coloring),
+            'message': (
+                f"Brute-force repair failed within node budget (visited {nodes['count']} nodes, "
+                f"limit={max_search_nodes})."
+            ),
+            'repaired_exam_count': int(len(repair_list)),
+            'search_nodes': int(nodes['count'])
+        }
+
+    repaired_coloring = dict(fixed_coloring)
+    repaired_coloring.update({int(k): int(v) for k, v in assignment.items()})
+
+    # Ensure every exam has assignment after merge.
+    for exam in range(n):
+        if exam not in repaired_coloring and exam in coloring:
+            repaired_coloring[exam] = int(coloring[exam])
+
+    return {
+        'success': True,
+        'coloring': repaired_coloring,
+        'message': (
+            f"Brute-force repair succeeded for {len(repair_list)} exams "
+            f"after visiting {nodes['count']} nodes."
+        ),
+        'repaired_exam_count': int(len(repair_list)),
+        'search_nodes': int(nodes['count'])
+    }
+
+
 # ============================================================================
 # STEP 6: GENERATE TIMETABLE
 # ============================================================================
@@ -1252,6 +1460,15 @@ Examples:
     
     parser.add_argument('--visualize', action='store_true',
                        help='Generate visualization plots (requires matplotlib, networkx)')
+
+    parser.add_argument('--no-repair', action='store_true',
+                       help='Disable post-QUBO brute-force local repair phase')
+
+    parser.add_argument('--max-repair-exams', type=int, default=18,
+                       help='Max violated exams allowed for brute-force repair (default: 18)')
+
+    parser.add_argument('--max-repair-nodes', type=int, default=200000,
+                       help='Max search nodes for brute-force repair (default: 200000)')
     
     return parser.parse_args()
 
@@ -1376,6 +1593,48 @@ def main():
                 courses_df=courses_df, capacity=args.capacity
             )
 
+            repair_info = {
+                'attempted': False,
+                'applied': False,
+                'message': 'Repair not attempted.'
+            }
+
+            # Optional local brute-force repair on violated subset, then merge
+            # into the partial solution from QUBO.
+            if (not is_valid) and (not args.no_repair):
+                repair_info['attempted'] = True
+                print("\nAttempting local brute-force repair on violated subset...")
+                repair_result = repair_coloring_bruteforce(
+                    coloring=coloring,
+                    adjacency=adjacency,
+                    courses_df=courses_df,
+                    K=args.k,
+                    capacity=args.capacity,
+                    violation_details=violation_details,
+                    max_repair_exams=args.max_repair_exams,
+                    max_search_nodes=args.max_repair_nodes
+                )
+
+                repair_info.update({
+                    'applied': bool(repair_result['success']),
+                    'message': str(repair_result['message']),
+                    'repaired_exam_count': int(repair_result.get('repaired_exam_count', 0)),
+                    'search_nodes': int(repair_result.get('search_nodes', 0))
+                })
+
+                print(f"Repair status: {repair_info['message']}")
+
+                if repair_result['success']:
+                    coloring = repair_result['coloring']
+                    # Re-validate merged coloring. We skip raw solution C1 check
+                    # here because repaired coloring is no longer tied to the
+                    # original binary sample vector.
+                    is_valid, num_conflicts, violations, soft_metrics, violation_details = validate_solution(
+                        coloring, adjacency, num_courses,
+                        solution=None, K=args.k,
+                        courses_df=courses_df, capacity=args.capacity
+                    )
+
             print(f"Runtime: {result['runtime']:.2f}s")
             print(f"Energy: {result['energy']:.2f}")
             print(f"Valid: {'✓ YES' if is_valid else '✗ NO'}")
@@ -1440,6 +1699,7 @@ def main():
                 'c4_max_overflow': soft_metrics['c4_max_overflow'],
                 'c4_total_overflow': soft_metrics['c4_total_overflow'],
                 'other_violations': soft_metrics['other_violations'],
+                'repair': repair_info,
                 'colors_used': len(set(coloring.values())),
                 'coloring': {str(k): int(v) for k, v in coloring.items()}
             }
@@ -1451,6 +1711,7 @@ def main():
                 'backend': backend_name,
                 'adjacency_mode': mode,
                 'is_valid': bool(is_valid),
+                'repair': repair_info,
                 'summary': {
                     'c1_onehot_violations': int(soft_metrics['c1_onehot_violations']),
                     'c2_conflict_violations': int(soft_metrics['c2_conflict_violations']),

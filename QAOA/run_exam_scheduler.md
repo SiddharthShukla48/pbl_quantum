@@ -346,8 +346,18 @@ In CSV mode, student and enrollment counts come from the selected filtered graph
 --lambda4 FLOAT            C4 penalty (default: 200, 0 disables)
 --capacity INT             Room capacity C for C4
 
+--no-repair                Disable post-QUBO local brute-force repair
+--max-repair-exams INT     Max violated exams allowed in repair subset (default: 18)
+--max-repair-nodes INT     Max backtracking nodes during repair search (default: 200000)
+
 --visualize                Save heatmap/graph/timetable PNGs
 ```
+
+Repair parameter behavior:
+
+- `--no-repair`: skips the repair phase entirely and reports raw QUBO decode/validation results.
+- `--max-repair-exams`: if the violated-exam subset size is greater than this value, repair is skipped for safety.
+- `--max-repair-nodes`: hard node-budget cutoff for backtracking; if reached, repair stops and the run keeps the original coloring.
 
 ---
 

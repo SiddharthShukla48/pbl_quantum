@@ -1,0 +1,26 @@
+{
+  "backend": "neal",
+  "adjacency_mode": "all",
+  "is_valid": true,
+  "repair": {
+    "attempted": true,
+    "applied": true,
+    "message": "Brute-force repair succeeded for 10 exams after visiting 10 nodes.",
+    "repaired_exam_count": 10,
+    "search_nodes": 10
+  },
+  "summary": {
+    "c1_onehot_violations": 0,
+    "c2_conflict_violations": 0,
+    "c3_consecutive_violations": 0,
+    "c4_slots_over_capacity": 0,
+    "other_violations": 0
+  },
+  "violations": {
+    "c1": [],
+    "c2": [],
+    "c3": [],
+    "c4": [],
+    "other": []
+  }
+}
