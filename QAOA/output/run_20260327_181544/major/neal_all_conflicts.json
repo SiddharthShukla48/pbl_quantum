@@ -1,0 +1,26 @@
+{
+  "backend": "neal",
+  "adjacency_mode": "major",
+  "is_valid": true,
+  "repair": {
+    "attempted": true,
+    "applied": true,
+    "message": "Brute-force repair succeeded for 4 exams after visiting 4 nodes (best C3=0, moves=4).",
+    "repaired_exam_count": 4,
+    "search_nodes": 4
+  },
+  "summary": {
+    "c1_onehot_violations": 0,
+    "c2_conflict_violations": 0,
+    "c3_consecutive_violations": 0,
+    "c4_slots_over_capacity": 0,
+    "other_violations": 0
+  },
+  "violations": {
+    "c1": [],
+    "c2": [],
+    "c3": [],
+    "c4": [],
+    "other": []
+  }
+}

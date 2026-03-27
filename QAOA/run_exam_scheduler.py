@@ -941,24 +941,74 @@ def validate_solution(coloring, adjacency, num_courses, solution=None, K=None,
     return is_valid, conflict_count, violations, metrics, violation_details
 
 
-def build_repair_exam_set(violation_details):
-    """Collect exams that participate in any reported C1-C4 violation."""
-    repair_exams = set()
+def build_repair_exam_set(violation_details, adjacency, courses_df=None):
+    """
+    Build a compact repair set from C1-C4 violations.
 
+    Policy:
+    - C1: keep violated exam(s) directly.
+    - C2/C3 pair violations: keep only ONE endpoint, preferring lower adjacency degree.
+    - C4 slot overflow: keep minimal exams from that slot until overflow is covered,
+      preferring lower adjacency degree (then lower enrollment).
+    """
+    repair_exams = set()
+    n = adjacency.shape[0]
+    degrees = np.sum(adjacency, axis=1).astype(float)
+
+    if courses_df is not None and 'enrollment' in courses_df.columns:
+        enrollments = courses_df['enrollment'].values.astype(float)
+    else:
+        enrollments = np.zeros(n, dtype=float)
+
+    def pick_lower_adjacency(exam_a, exam_b):
+        """Pick the endpoint with lower adjacency degree; tie-break by enrollment."""
+        da = float(degrees[int(exam_a)])
+        db = float(degrees[int(exam_b)])
+        if da < db:
+            return int(exam_a)
+        if db < da:
+            return int(exam_b)
+        ea = float(enrollments[int(exam_a)])
+        eb = float(enrollments[int(exam_b)])
+        if ea <= eb:
+            return int(exam_a)
+        return int(exam_b)
+
+    # C1: one-hot violations must be repaired directly.
     for item in violation_details.get('c1', []):
         repair_exams.add(int(item['exam']))
 
+    # C2: one exam per conflict pair.
     for item in violation_details.get('c2', []):
-        repair_exams.add(int(item['exam_i']))
-        repair_exams.add(int(item['exam_j']))
+        exam_i = int(item['exam_i'])
+        exam_j = int(item['exam_j'])
+        repair_exams.add(pick_lower_adjacency(exam_i, exam_j))
 
+    # C3: one exam per consecutive pair.
     for item in violation_details.get('c3', []):
-        repair_exams.add(int(item['exam_i']))
-        repair_exams.add(int(item['exam_j']))
+        exam_i = int(item['exam_i'])
+        exam_j = int(item['exam_j'])
+        repair_exams.add(pick_lower_adjacency(exam_i, exam_j))
 
+    # C4: pick minimal exams from each overflowed slot until overflow is covered.
     for item in violation_details.get('c4', []):
-        for exam in item.get('exams_in_slot', []):
+        overflow = float(item.get('overflow', 0.0))
+        slot_exams = [int(exam) for exam in item.get('exams_in_slot', [])]
+        if overflow <= 0.0 or not slot_exams:
+            continue
+
+        # Lower adjacency first, then lower enrollment, then exam id.
+        ordered = sorted(
+            slot_exams,
+            key=lambda e: (float(degrees[e]), float(enrollments[e]), int(e))
+        )
+
+        removed = 0.0
+        for exam in ordered:
             repair_exams.add(int(exam))
+            removed += float(enrollments[int(exam)])
+            if removed + 1e-9 >= overflow:
+                break
 
     return repair_exams
 
@@ -984,7 +1034,11 @@ def repair_coloring_bruteforce(
     """
 
     n = adjacency.shape[0]
-    repair_exams = build_repair_exam_set(violation_details)
+    repair_exams = build_repair_exam_set(
+        violation_details=violation_details,
+        adjacency=adjacency,
+        courses_df=courses_df
+    )
 
     if not repair_exams:
         return {
@@ -1007,14 +1061,7 @@ def repair_coloring_bruteforce(
             'search_nodes': 0
         }
 
-    repair_list = sorted(repair_exams)
-    repair_set = set(repair_list)
-
-    fixed_coloring = {
-        int(exam): int(slot)
-        for exam, slot in coloring.items()
-        if int(exam) not in repair_set
-    }
+    repair_set = set(sorted(repair_exams))
 
     years = courses_df['year'].values if courses_df is not None else np.zeros(n, dtype=int)
     enrollments = (
@@ -1023,27 +1070,95 @@ def repair_coloring_bruteforce(
         else np.zeros(n, dtype=float)
     )
 
+    # Expand repair set if any selected exam has no feasible slot against the
+    # currently frozen exams (considering C2 and C4). This avoids immediate
+    # dead-end where MRV finds empty domain at root.
+    for _ in range(int(max_repair_exams)):
+        repair_list = sorted(repair_set)
+        fixed_coloring = {
+            int(exam): int(slot)
+            for exam, slot in coloring.items()
+            if int(exam) not in repair_set
+        }
+
+        slot_loads_fixed = np.zeros(int(K), dtype=float)
+        if capacity is not None:
+            for exam, slot in fixed_coloring.items():
+                slot_loads_fixed[int(slot)] += float(enrollments[int(exam)])
+
+        dead_exam = None
+        for exam in repair_list:
+            feasible = False
+            for slot in range(K):
+                blocked = False
+                for nb in range(n):
+                    if adjacency[exam, nb] > 0 and nb in fixed_coloring and int(fixed_coloring[nb]) == int(slot):
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                if capacity is not None:
+                    if slot_loads_fixed[int(slot)] + float(enrollments[int(exam)]) > float(capacity):
+                        continue
+                feasible = True
+                break
+            if not feasible:
+                dead_exam = exam
+                break
+
+        if dead_exam is None:
+            break
+
+        # Pull one blocker into repair set (prefer lower-degree blockers).
+        candidates = [
+            nb for nb in range(n)
+            if adjacency[dead_exam, nb] > 0 and nb in fixed_coloring
+        ]
+        if not candidates:
+            break
+
+        degrees = np.sum(adjacency, axis=1).astype(float)
+        blocker = min(
+            candidates,
+            key=lambda e: (float(degrees[int(e)]), float(enrollments[int(e)]), int(e))
+        )
+        repair_set.add(int(blocker))
+        if len(repair_set) > int(max_repair_exams):
+            return {
+                'success': False,
+                'coloring': dict(coloring),
+                'message': (
+                    f"Repair-set expansion exceeded max_repair_exams={max_repair_exams}; "
+                    "cannot create feasible local search neighborhood."
+                ),
+                'repaired_exam_count': int(len(repair_set)),
+                'search_nodes': 0
+            }
+
+    repair_list = sorted(repair_set)
+    fixed_coloring = {
+        int(exam): int(slot)
+        for exam, slot in coloring.items()
+        if int(exam) not in repair_set
+    }
+
     # Pre-compute fixed slot loads for C4 pruning.
     slot_loads = np.zeros(int(K), dtype=float)
     if capacity is not None:
         for exam, slot in fixed_coloring.items():
             slot_loads[int(slot)] += float(enrollments[int(exam)])
 
-    # Build neighbor lists used by constraints.
     conflict_neighbors = {
         i: [j for j in range(n) if adjacency[i, j] > 0 and j != i]
-        for i in repair_list
-    }
-    c3_neighbors = {
-        i: [
-            j for j in range(n)
-            if j != i and years[i] == years[j] and adjacency[i, j] > 0
-        ]
         for i in repair_list
     }
 
     assignment = {}
     nodes = {'count': 0}
+    best = {'assignment': None, 'score': (float('inf'), float('inf'))}
+
+    # Keep repairs stable when tieing C3 score.
+    original_slots = {int(e): int(coloring[e]) for e in repair_list if e in coloring}
 
     def is_slot_feasible(exam, slot):
         # C2 with fixed assignments
@@ -1054,16 +1169,6 @@ def repair_coloring_bruteforce(
         # C2 with partial repair assignments
         for nb in conflict_neighbors[exam]:
             if nb in assignment and int(assignment[nb]) == int(slot):
-                return False
-
-        # C3 with fixed assignments (only same-year + conflicting)
-        for nb in c3_neighbors[exam]:
-            if nb in fixed_coloring and abs(int(slot) - int(fixed_coloring[nb])) == 1:
-                return False
-
-        # C3 with partial repair assignments
-        for nb in c3_neighbors[exam]:
-            if nb in assignment and abs(int(slot) - int(assignment[nb])) == 1:
                 return False
 
         # C4 capacity check
@@ -1090,9 +1195,36 @@ def repair_coloring_bruteforce(
 
         return best_exam, (best_domain if best_domain is not None else [])
 
+    def evaluate_assignment_score():
+        merged = dict(fixed_coloring)
+        merged.update({int(k): int(v) for k, v in assignment.items()})
+
+        c3_count = 0
+        for i in range(n):
+            if i not in merged:
+                continue
+            for j in range(i + 1, n):
+                if j not in merged:
+                    continue
+                if years[i] == years[j] and adjacency[i, j] > 0:
+                    if abs(int(merged[i]) - int(merged[j])) == 1:
+                        c3_count += 1
+
+        move_count = 0
+        for exam, slot in assignment.items():
+            if exam in original_slots and int(original_slots[exam]) != int(slot):
+                move_count += 1
+
+        return (int(c3_count), int(move_count))
+
     def backtrack():
         if len(assignment) == len(repair_list):
-            return True
+            score = evaluate_assignment_score()
+            if score < best['score']:
+                best['score'] = score
+                best['assignment'] = dict(assignment)
+            # Early stop if C3 is fully eliminated.
+            return score[0] == 0
 
         nodes['count'] += 1
         if nodes['count'] > int(max_search_nodes):
@@ -1107,7 +1239,8 @@ def repair_coloring_bruteforce(
             if capacity is not None:
                 slot_loads[int(slot)] += float(enrollments[int(exam)])
 
-            if backtrack():
+            stop = backtrack()
+            if stop:
                 return True
 
             if capacity is not None:
@@ -1116,13 +1249,13 @@ def repair_coloring_bruteforce(
 
         return False
 
-    solved = backtrack()
-    if not solved:
+    backtrack()
+    if best['assignment'] is None:
         return {
             'success': False,
             'coloring': dict(coloring),
             'message': (
-                f"Brute-force repair failed within node budget (visited {nodes['count']} nodes, "
+                f"Brute-force repair found no feasible C1/C2/C4 assignment (visited {nodes['count']} nodes, "
                 f"limit={max_search_nodes})."
             ),
             'repaired_exam_count': int(len(repair_list)),
@@ -1130,7 +1263,7 @@ def repair_coloring_bruteforce(
         }
 
     repaired_coloring = dict(fixed_coloring)
-    repaired_coloring.update({int(k): int(v) for k, v in assignment.items()})
+    repaired_coloring.update({int(k): int(v) for k, v in best['assignment'].items()})
 
     # Ensure every exam has assignment after merge.
     for exam in range(n):
@@ -1142,7 +1275,7 @@ def repair_coloring_bruteforce(
         'coloring': repaired_coloring,
         'message': (
             f"Brute-force repair succeeded for {len(repair_list)} exams "
-            f"after visiting {nodes['count']} nodes."
+            f"after visiting {nodes['count']} nodes (best C3={best['score'][0]}, moves={best['score'][1]})."
         ),
         'repaired_exam_count': int(len(repair_list)),
         'search_nodes': int(nodes['count'])
