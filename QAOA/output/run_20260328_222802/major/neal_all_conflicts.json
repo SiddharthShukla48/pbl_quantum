@@ -1,0 +1,139 @@
+{
+  "backend": "neal",
+  "adjacency_mode": "major",
+  "is_valid": false,
+  "repair": {
+    "attempted": true,
+    "applied": false,
+    "message": "Repair not attempted.",
+    "mini_qubo": {
+      "success": false,
+      "message": "Mini-QUBO repair found no feasible one-hot local assignments.",
+      "repaired_exam_count": 8,
+      "k_local_tried": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "k_local_used": null
+    },
+    "bruteforce": {
+      "success": false,
+      "message": "Brute-force repair found no feasible C1/C2/C4 assignment (visited 2 nodes, limit=200000).",
+      "repaired_exam_count": 14,
+      "search_nodes": 2
+    }
+  },
+  "summary": {
+    "c1_onehot_violations": 3,
+    "c2_conflict_violations": 1,
+    "c3_consecutive_violations": 4,
+    "c4_slots_over_capacity": 0,
+    "other_violations": 1
+  },
+  "violations": {
+    "c1": [
+      {
+        "exam": 37,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "exam": 38,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "exam": 45,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "c2": [
+      {
+        "exam_i": 51,
+        "exam_j": 52,
+        "slot": 4
+      }
+    ],
+    "c3": [
+      {
+        "exam_i": 0,
+        "exam_j": 56,
+        "year": 9,
+        "slot_i": 2,
+        "slot_j": 1
+      },
+      {
+        "exam_i": 22,
+        "exam_j": 25,
+        "year": 5,
+        "slot_i": 5,
+        "slot_j": 4
+      },
+      {
+        "exam_i": 24,
+        "exam_j": 25,
+        "year": 5,
+        "slot_i": 3,
+        "slot_j": 4
+      },
+      {
+        "exam_i": 43,
+        "exam_j": 46,
+        "year": 9,
+        "slot_i": 11,
+        "slot_j": 10
+      }
+    ],
+    "c4": [],
+    "other": [
+      {
+        "type": "incomplete_assignment",
+        "assigned_exams": 67,
+        "num_courses": 70,
+        "message": "Only 67/70 exams assigned"
+      }
+    ]
+  }
+}

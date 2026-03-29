@@ -1,0 +1,45 @@
+{
+  "backend": "neal",
+  "adjacency_mode": "all",
+  "is_valid": true,
+  "repair": {
+    "attempted": true,
+    "applied": true,
+    "message": "Brute-force repair succeeded for 5 exams after visiting 12 nodes (best C3=0, moves=5).",
+    "slot_expansion": {
+      "success": false,
+      "message": "Group repair failed global validation after merge; returning original coloring.",
+      "repaired_exam_count": 5,
+      "k_repair": 2,
+      "new_slots_added": 0,
+      "total_slots_final": 18,
+      "group_count": 2,
+      "placed_group_count": 2,
+      "unplaced_group_count": 0,
+      "group_bruteforce_nodes": 6
+    },
+    "total_slots": 18,
+    "bruteforce": {
+      "success": true,
+      "message": "Brute-force repair succeeded for 5 exams after visiting 12 nodes (best C3=0, moves=5).",
+      "repaired_exam_count": 5,
+      "search_nodes": 12
+    },
+    "repaired_exam_count": 5,
+    "search_nodes": 12
+  },
+  "summary": {
+    "c1_onehot_violations": 0,
+    "c2_conflict_violations": 0,
+    "c3_consecutive_violations": 0,
+    "c4_slots_over_capacity": 0,
+    "other_violations": 0
+  },
+  "violations": {
+    "c1": [],
+    "c2": [],
+    "c3": [],
+    "c4": [],
+    "other": []
+  }
+}

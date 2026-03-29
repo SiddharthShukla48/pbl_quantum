@@ -1013,6 +1013,518 @@ def build_repair_exam_set(violation_details, adjacency, courses_df=None):
     return repair_exams
 
 
+def repair_coloring_slot_expansion(
+    coloring,
+    adjacency,
+    courses_df,
+    K,
+    capacity,
+    violation_details,
+    lambda1,
+    lambda2,
+    lambda3,
+    lambda4,
+    num_reads=2000,
+    max_repair_exams=25,
+    max_local_k=0
+):
+    """
+    Hybrid repair pipeline without repair-set expansion:
+    1. Build fixed repair set from violations only.
+    2. Solve smaller QUBO on repair exams only, sweeping k=1.. to find minimum k_repair.
+    3. Treat each local slot as a repair group.
+    4. Use brute-force to place groups into existing K frozen slots (no expansion of repair set).
+    5. Any unplaced groups get appended as new disjoint slots.
+    6. Validate final combined schedule.
+    """
+    if not DWAVE_AVAILABLE:
+        return {
+            'success': False,
+            'coloring': dict(coloring),
+            'total_slots': int(K),
+            'message': 'Slot expansion unavailable: Neal backend not installed.',
+            'repaired_exam_count': 0,
+            'k_repair': 0,
+            'new_slots_added': 0
+        }
+
+    n = adjacency.shape[0]
+    repair_exams = build_repair_exam_set(
+        violation_details=violation_details,
+        adjacency=adjacency,
+        courses_df=courses_df
+    )
+
+    if not repair_exams:
+        return {
+            'success': True,
+            'coloring': dict(coloring),
+            'total_slots': int(K),
+            'message': 'No violated exams found; nothing to repair.',
+            'repaired_exam_count': 0,
+            'k_repair': 0,
+            'new_slots_added': 0
+        }
+
+    if len(repair_exams) > int(max_repair_exams):
+        return {
+            'success': False,
+            'coloring': dict(coloring),
+            'total_slots': int(K),
+            'message': (
+                f"Repair set too large ({len(repair_exams)} exams > max_repair_exams={max_repair_exams}); "
+                'skip slot expansion.'
+            ),
+            'repaired_exam_count': int(len(repair_exams)),
+            'k_repair': 0,
+            'new_slots_added': 0
+        }
+
+    repair_list = sorted(int(e) for e in repair_exams)
+    
+    # ========== STEP 1: Solve smaller QUBO for repair set only ==========
+    sub_adj = adjacency[np.ix_(repair_list, repair_list)]
+    sub_courses_df = None
+    if courses_df is not None:
+        sub_courses_df = courses_df.iloc[repair_list].reset_index(drop=True)
+
+    enrollments = (
+        courses_df['enrollment'].values.astype(float)
+        if courses_df is not None and 'enrollment' in courses_df.columns
+        else np.zeros(n, dtype=float)
+    )
+    years = (
+        courses_df['year'].values.astype(int)
+        if courses_df is not None and 'year' in courses_df.columns
+        else np.zeros(n, dtype=int)
+    )
+
+    # Find minimum K_repair needed for repair set
+    best_repair_candidate = None
+    best_k_repair = None
+    k_tried = []
+
+    max_local_k_eff = int(K) if int(max_local_k) <= 0 else min(int(max_local_k), int(K))
+    start_k = 1
+    start_k = min(start_k, max_local_k_eff)
+
+    for k_local in range(start_k, max_local_k_eff + 1):
+        # Build QUBO for repair set with ALL 4 constraints (independent problem)
+        Q_local = build_qubo(
+            sub_adj,
+            K=k_local,
+            courses_df=sub_courses_df,
+            lambda1=lambda1,
+            lambda2=lambda2,
+            lambda3=lambda3,
+            lambda4=lambda4,  # Include C4 for independent problem
+            capacity=capacity
+        )
+
+        linear = {}
+        quadratic = {}
+        for i in range(Q_local.shape[0]):
+            if Q_local[i, i] != 0:
+                linear[i] = Q_local[i, i]
+            for j in range(i + 1, Q_local.shape[0]):
+                if Q_local[i, j] != 0:
+                    quadratic[(i, j)] = Q_local[i, j]
+        bqm = BinaryQuadraticModel(linear, quadratic, 0.0, 'BINARY')
+
+        sampler = SimulatedAnnealingSampler()
+        sampleset = sampler.sample(bqm, num_reads=int(num_reads))
+        k_tried.append(int(k_local))
+        best_metrics_k = None
+        best_score_k = None
+        onehot_checked = 0
+
+        for row in sampleset.data(fields=['sample', 'energy']):
+            sample = row.sample
+
+            local_solution = np.zeros(Q_local.shape[0], dtype=int)
+            for idx, val in sample.items():
+                local_solution[int(idx)] = int(val)
+
+            # Strict one-hot on repair problem
+            onehot_ok = True
+            local_repair_dict = {}  # maps repair_exam -> local_slot (0 to k_local-1)
+            for li in range(len(repair_list)):
+                start = li * k_local
+                end = start + k_local
+                active = np.where(local_solution[start:end] == 1)[0]
+                if len(active) != 1:
+                    onehot_ok = False
+                    break
+                local_repair_dict[int(repair_list[li])] = int(active[0])
+            if not onehot_ok:
+                continue
+
+            # Validate internal repair problem only on repair subset.
+            temp_merged = {}
+            for li, local_slot in local_repair_dict.items():
+                temp_merged[int(li)] = int(local_slot)
+
+            onehot_checked += 1
+            is_repair_valid, _, _, local_metrics, _ = validate_solution(
+                temp_merged, sub_adj, len(repair_list),
+                solution=None, K=k_local,
+                courses_df=sub_courses_df, capacity=capacity
+            )
+
+            score_k = (
+                int(local_metrics.get('c1_onehot_violations', 0)),
+                int(local_metrics.get('c2_conflict_violations', 0)),
+                int(local_metrics.get('c3_consecutive_violations', 0)),
+                int(local_metrics.get('c4_slots_over_capacity', 0)),
+                float(row.energy)
+            )
+            if best_score_k is None or score_k < best_score_k:
+                best_score_k = score_k
+                best_metrics_k = dict(local_metrics)
+
+            if is_repair_valid:
+                # Found valid repair set solution with k_local slots
+                best_repair_candidate = local_repair_dict
+                best_k_repair = int(k_local)
+                break
+
+        if best_metrics_k is None:
+            print(f"  [Smaller QUBO k={k_local}]")
+            print("    - valid one-hot samples found: 0")
+            print("    - best sampled metrics: unavailable (no valid one-hot sample)")
+            print("    - status: NOT FEASIBLE at this k")
+        else:
+            c1_v = int(best_metrics_k.get('c1_onehot_violations', 0))
+            c2_v = int(best_metrics_k.get('c2_conflict_violations', 0))
+            c3_v = int(best_metrics_k.get('c3_consecutive_violations', 0))
+            c4_v = int(best_metrics_k.get('c4_slots_over_capacity', 0))
+            feasible_here = (c1_v == 0 and c2_v == 0 and c3_v == 0 and c4_v == 0)
+            print(f"  [Smaller QUBO k={k_local}]")
+            print(f"    - valid one-hot samples found: {onehot_checked}")
+            print(
+                "    - best sampled metrics: "
+                f"C1={c1_v}, C2={c2_v}, C3={c3_v}, C4={c4_v}"
+            )
+            print(
+                f"    - status: {'FEASIBLE at this k' if feasible_here else 'NOT FEASIBLE at this k'}"
+            )
+
+        if best_repair_candidate is not None:
+            break  # Found solution, no need to try larger k
+
+    if best_repair_candidate is None:
+        return {
+            'success': False,
+            'coloring': dict(coloring),
+            'total_slots': int(K),
+            'message': 'Slot expansion: could not find valid internal scheduling for repair set.',
+            'repaired_exam_count': int(len(repair_list)),
+            'k_repair': 0,
+            'new_slots_added': 0
+        }
+
+    # ========== STEP 2: Build groups from minimum-slot repair solution ==========
+    group_to_exams = {}
+    for exam, local_slot in best_repair_candidate.items():
+        group_to_exams.setdefault(int(local_slot), []).append(int(exam))
+    group_ids = sorted(group_to_exams.keys())
+
+    fixed_coloring = {
+        int(exam): int(slot)
+        for exam, slot in coloring.items()
+        if int(exam) not in repair_exams
+    }
+
+    fixed_slot_loads = np.zeros(int(K), dtype=float)
+    for exam, slot in fixed_coloring.items():
+        fixed_slot_loads[int(slot)] += float(enrollments[int(exam)])
+
+    # ========== STEP 3: Brute-force group placement into existing slots ==========
+    group_load = {
+        gid: float(sum(float(enrollments[int(exam)]) for exam in exams))
+        for gid, exams in group_to_exams.items()
+    }
+
+    # Precompute incompatible existing slots per group due to C2 with frozen exams.
+    group_blocked_slots = {gid: set() for gid in group_ids}
+    for gid in group_ids:
+        exams = group_to_exams[gid]
+        for slot in range(int(K)):
+            blocked = False
+            for exam in exams:
+                for fixed_exam, fixed_slot in fixed_coloring.items():
+                    if int(fixed_slot) == int(slot) and adjacency[int(exam), int(fixed_exam)] > 0:
+                        blocked = True
+                        break
+                if blocked:
+                    break
+            if blocked:
+                group_blocked_slots[gid].add(int(slot))
+
+    # Group-level backtracking: assign each group to one existing slot or leave unplaced.
+    ordered_groups = sorted(
+        group_ids,
+        key=lambda gid: (len(group_blocked_slots[gid]), -len(group_to_exams[gid]), -group_load[gid], gid),
+        reverse=True
+    )
+
+    assignment = {}  # gid -> slot in [0..K-1], only for placed groups
+    slot_group_load = np.zeros(int(K), dtype=float)
+    best_group_result = {
+        'placed_count': -1,
+        'assignment': {},
+        'nodes': 0
+    }
+
+    def can_place_group(gid, slot):
+        if int(slot) in group_blocked_slots[gid]:
+            return False
+
+        # Capacity with fixed + already placed groups.
+        if capacity is not None:
+            projected = float(fixed_slot_loads[int(slot)]) + float(slot_group_load[int(slot)]) + float(group_load[gid])
+            if projected > float(capacity):
+                return False
+
+        # C2 with already placed groups in same slot.
+        for ogid, oslot in assignment.items():
+            if int(oslot) != int(slot):
+                continue
+            for exam_a in group_to_exams[gid]:
+                for exam_b in group_to_exams[ogid]:
+                    if adjacency[int(exam_a), int(exam_b)] > 0:
+                        return False
+
+        # Hard C3 rule with frozen exams: disallow placements that create
+        # same-year conflict pairs in consecutive slots.
+        for exam_a in group_to_exams[gid]:
+            ya = int(years[int(exam_a)])
+            for fixed_exam, fixed_slot in fixed_coloring.items():
+                if abs(int(slot) - int(fixed_slot)) != 1:
+                    continue
+                if int(adjacency[int(exam_a), int(fixed_exam)]) <= 0:
+                    continue
+                if ya == int(years[int(fixed_exam)]):
+                    return False
+
+        # Hard C3 rule with already placed groups.
+        for ogid, oslot in assignment.items():
+            if abs(int(slot) - int(oslot)) != 1:
+                continue
+            for exam_a in group_to_exams[gid]:
+                ya = int(years[int(exam_a)])
+                for exam_b in group_to_exams[int(ogid)]:
+                    if int(adjacency[int(exam_a), int(exam_b)]) <= 0:
+                        continue
+                    if ya == int(years[int(exam_b)]):
+                        return False
+        return True
+
+    def backtrack_groups(idx):
+        best_group_result['nodes'] += 1
+
+        if idx == len(ordered_groups):
+            placed_count = len(assignment)
+            if placed_count > best_group_result['placed_count']:
+                best_group_result['placed_count'] = int(placed_count)
+                best_group_result['assignment'] = dict(assignment)
+            return
+
+        # Upper bound pruning: if we place all remaining, can we beat current best?
+        remaining = len(ordered_groups) - idx
+        if len(assignment) + remaining <= best_group_result['placed_count']:
+            return
+
+        gid = ordered_groups[idx]
+
+        feasible_slots = [slot for slot in range(int(K)) if can_place_group(gid, slot)]
+
+        # Try placed branch first.
+        for slot in feasible_slots:
+            assignment[int(gid)] = int(slot)
+            if capacity is not None:
+                slot_group_load[int(slot)] += float(group_load[gid])
+            backtrack_groups(idx + 1)
+            if capacity is not None:
+                slot_group_load[int(slot)] -= float(group_load[gid])
+            del assignment[int(gid)]
+
+        # Unplaced branch: this group will be moved to appended smaller-QUBO slot later.
+        backtrack_groups(idx + 1)
+
+    backtrack_groups(0)
+
+    placed_group_assignment = {int(gid): int(slot) for gid, slot in best_group_result['assignment'].items()}
+    unplaced_groups = [gid for gid in group_ids if gid not in placed_group_assignment]
+
+    # ========== STEP 4: Construct final coloring ==========
+    final_coloring = dict(fixed_coloring)
+
+    # Place groups that fit in frozen slots.
+    for gid, slot in placed_group_assignment.items():
+        for exam in group_to_exams[int(gid)]:
+            final_coloring[int(exam)] = int(slot)
+
+    # Append new slots for unplaced groups with hard C3-safe placement.
+    group_to_new_slot = {}
+    fallback_contiguous_append = False
+
+    def c3_conflict_between_groups(gid_a, slot_a, gid_b, slot_b):
+        if abs(int(slot_a) - int(slot_b)) != 1:
+            return False
+        for exam_a in group_to_exams[int(gid_a)]:
+            ya = int(years[int(exam_a)])
+            for exam_b in group_to_exams[int(gid_b)]:
+                if int(adjacency[int(exam_a), int(exam_b)]) <= 0:
+                    continue
+                if ya == int(years[int(exam_b)]):
+                    return True
+        return False
+
+    def c3_conflict_with_fixed_or_placed(gid, slot):
+        # Against frozen exams
+        for exam_a in group_to_exams[int(gid)]:
+            ya = int(years[int(exam_a)])
+            for fixed_exam, fixed_slot in fixed_coloring.items():
+                if abs(int(slot) - int(fixed_slot)) != 1:
+                    continue
+                if int(adjacency[int(exam_a), int(fixed_exam)]) <= 0:
+                    continue
+                if ya == int(years[int(fixed_exam)]):
+                    return True
+
+        # Against groups already placed into existing slots
+        for pgid, pslot in placed_group_assignment.items():
+            if c3_conflict_between_groups(int(gid), int(slot), int(pgid), int(pslot)):
+                return True
+        return False
+
+    if len(unplaced_groups) > 0:
+        ordered_unplaced = sorted(
+            [int(gid) for gid in unplaced_groups],
+            key=lambda gid: (-len(group_to_exams[int(gid)]), -float(group_load[int(gid)]), int(gid))
+        )
+
+        def try_assign_with_span(span):
+            candidate_slots = list(range(int(K), int(K) + int(span)))
+            partial = {}
+
+            def can_place_new_group(gid, slot):
+                # One group per new slot (disjoint groups in appended timeline)
+                if int(slot) in [int(v) for v in partial.values()]:
+                    return False
+
+                # Capacity in appended slot with this group alone
+                if capacity is not None and float(group_load[int(gid)]) > float(capacity):
+                    return False
+
+                # Hard C3 against fixed and placed groups
+                if c3_conflict_with_fixed_or_placed(int(gid), int(slot)):
+                    return False
+
+                # Hard C3 against already assigned appended groups
+                for ogid, oslot in partial.items():
+                    if c3_conflict_between_groups(int(gid), int(slot), int(ogid), int(oslot)):
+                        return False
+                return True
+
+            def bt(idx):
+                if idx == len(ordered_unplaced):
+                    return True
+                gid = int(ordered_unplaced[idx])
+                for slot in candidate_slots:
+                    if can_place_new_group(gid, slot):
+                        partial[int(gid)] = int(slot)
+                        if bt(idx + 1):
+                            return True
+                        del partial[int(gid)]
+                return False
+
+            if bt(0):
+                return dict(partial)
+            return None
+
+        # Iterative deepening on appended span to keep added slots minimal.
+        min_span = int(len(unplaced_groups))
+        max_span = int(max(min_span, 3 * len(unplaced_groups)))
+        assigned = None
+        for span in range(min_span, max_span + 1):
+            assigned = try_assign_with_span(span)
+            if assigned is not None:
+                break
+
+        if assigned is not None:
+            group_to_new_slot = {int(g): int(s) for g, s in assigned.items()}
+        else:
+            # Fallback: contiguous append if strict C3-safe append is impossible.
+            fallback_contiguous_append = True
+            for offset, gid in enumerate(ordered_unplaced):
+                group_to_new_slot[int(gid)] = int(K) + int(offset)
+
+    for gid, slot in group_to_new_slot.items():
+        for exam in group_to_exams[int(gid)]:
+            final_coloring[int(exam)] = int(slot)
+
+    # Total slots: original K + span used by appended groups.
+    if len(group_to_new_slot) > 0:
+        new_slots_used = int(max(group_to_new_slot.values()) - int(K) + 1)
+    else:
+        new_slots_used = 0
+    total_slots = int(K) + new_slots_used
+
+    # ========== STEP 5: Full validation on combined schedule ==========
+    is_valid, _, _, metrics, _ = validate_solution(
+        final_coloring, adjacency, n,
+        solution=None, K=total_slots,
+        courses_df=courses_df, capacity=capacity
+    )
+
+    hard_ok = (
+        int(metrics.get('c1_onehot_violations', 0)) == 0
+        and int(metrics.get('c2_conflict_violations', 0)) == 0
+        and int(metrics.get('c3_consecutive_violations', 0)) == 0
+        and int(metrics.get('c4_slots_over_capacity', 0)) == 0
+    )
+
+    if hard_ok:
+        return {
+            'success': True,
+            'coloring': final_coloring,
+            'total_slots': int(total_slots),
+            'message': (
+                f"Group repair succeeded: k_repair={best_k_repair}, groups={len(group_ids)}, "
+                f"placed_groups={len(placed_group_assignment)}, appended_groups={len(unplaced_groups)}. "
+                f"Total: {total_slots} (was {K}), C3={int(metrics.get('c3_consecutive_violations', 0))}."
+            ),
+            'repaired_exam_count': int(len(repair_list)),
+            'k_repair': int(best_k_repair),
+            'new_slots_added': int(new_slots_used),
+            'group_count': int(len(group_ids)),
+            'placed_group_count': int(len(placed_group_assignment)),
+            'unplaced_group_count': int(len(unplaced_groups)),
+            'group_bruteforce_nodes': int(best_group_result['nodes']),
+            'append_fallback_used': bool(fallback_contiguous_append)
+        }
+    else:
+        return {
+            'success': False,
+            'coloring': final_coloring,
+            'total_slots': int(total_slots),
+            'message': (
+                f"Group repair produced combined schedule but global validation failed; "
+                f"returning combined schedule as final candidate by policy."
+            ),
+            'repaired_exam_count': int(len(repair_list)),
+            'k_repair': int(best_k_repair),
+            'new_slots_added': int(new_slots_used),
+            'group_count': int(len(group_ids)),
+            'placed_group_count': int(len(placed_group_assignment)),
+            'unplaced_group_count': int(len(unplaced_groups)),
+            'group_bruteforce_nodes': int(best_group_result['nodes']),
+            'append_fallback_used': bool(fallback_contiguous_append)
+        }
+
+
 def repair_coloring_bruteforce(
     coloring,
     adjacency,
@@ -1069,71 +1581,6 @@ def repair_coloring_bruteforce(
         if courses_df is not None and 'enrollment' in courses_df.columns
         else np.zeros(n, dtype=float)
     )
-
-    # Expand repair set if any selected exam has no feasible slot against the
-    # currently frozen exams (considering C2 and C4). This avoids immediate
-    # dead-end where MRV finds empty domain at root.
-    for _ in range(int(max_repair_exams)):
-        repair_list = sorted(repair_set)
-        fixed_coloring = {
-            int(exam): int(slot)
-            for exam, slot in coloring.items()
-            if int(exam) not in repair_set
-        }
-
-        slot_loads_fixed = np.zeros(int(K), dtype=float)
-        if capacity is not None:
-            for exam, slot in fixed_coloring.items():
-                slot_loads_fixed[int(slot)] += float(enrollments[int(exam)])
-
-        dead_exam = None
-        for exam in repair_list:
-            feasible = False
-            for slot in range(K):
-                blocked = False
-                for nb in range(n):
-                    if adjacency[exam, nb] > 0 and nb in fixed_coloring and int(fixed_coloring[nb]) == int(slot):
-                        blocked = True
-                        break
-                if blocked:
-                    continue
-                if capacity is not None:
-                    if slot_loads_fixed[int(slot)] + float(enrollments[int(exam)]) > float(capacity):
-                        continue
-                feasible = True
-                break
-            if not feasible:
-                dead_exam = exam
-                break
-
-        if dead_exam is None:
-            break
-
-        # Pull one blocker into repair set (prefer lower-degree blockers).
-        candidates = [
-            nb for nb in range(n)
-            if adjacency[dead_exam, nb] > 0 and nb in fixed_coloring
-        ]
-        if not candidates:
-            break
-
-        degrees = np.sum(adjacency, axis=1).astype(float)
-        blocker = min(
-            candidates,
-            key=lambda e: (float(degrees[int(e)]), float(enrollments[int(e)]), int(e))
-        )
-        repair_set.add(int(blocker))
-        if len(repair_set) > int(max_repair_exams):
-            return {
-                'success': False,
-                'coloring': dict(coloring),
-                'message': (
-                    f"Repair-set expansion exceeded max_repair_exams={max_repair_exams}; "
-                    "cannot create feasible local search neighborhood."
-                ),
-                'repaired_exam_count': int(len(repair_set)),
-                'search_nodes': 0
-            }
 
     repair_list = sorted(repair_set)
     fixed_coloring = {
@@ -1269,6 +1716,19 @@ def repair_coloring_bruteforce(
     for exam in range(n):
         if exam not in repaired_coloring and exam in coloring:
             repaired_coloring[exam] = int(coloring[exam])
+
+    # Enforce full success criterion including C3.
+    if int(best['score'][0]) != 0:
+        return {
+            'success': False,
+            'coloring': dict(coloring),
+            'message': (
+                f"Brute-force repair found best assignment with C3={best['score'][0]} "
+                f"after visiting {nodes['count']} nodes; rejected by full C1/C2/C3/C4 success criteria."
+            ),
+            'repaired_exam_count': int(len(repair_list)),
+            'search_nodes': int(nodes['count'])
+        }
 
     return {
         'success': True,
@@ -1602,6 +2062,15 @@ Examples:
 
     parser.add_argument('--max-repair-nodes', type=int, default=200000,
                        help='Max search nodes for brute-force repair (default: 200000)')
+
+    parser.add_argument('--no-slot-expansion', action='store_true',
+                       help='Disable independent repair subproblem + slot expansion')
+
+    parser.add_argument('--slot-expansion-reads', type=int, default=2000,
+                       help='Neal reads for independent repair solve (default: 2000)')
+
+    parser.add_argument('--max-expansion-k', type=int, default=0,
+                       help='Max K for independent repair problem (0 means use full K)')
     
     return parser.parse_args()
 
@@ -1719,12 +2188,22 @@ def main():
             print(f"\n{backend_name.upper()}")
             print("-" * 60)
 
-            coloring = decode_solution(result['solution'], num_courses, args.k)
+            solve_k = int(args.k)
+            current_k = int(solve_k)
+
+            coloring = decode_solution(result['solution'], num_courses, solve_k)
             is_valid, num_conflicts, violations, soft_metrics, violation_details = validate_solution(
                 coloring, adjacency, num_courses,
-                solution=result['solution'], K=args.k,
+                solution=result['solution'], K=solve_k,
                 courses_df=courses_df, capacity=args.capacity
             )
+
+            print("\nMain QUBO constraint summary (before repair):")
+            print(f"  C1 one-hot violations: {int(soft_metrics.get('c1_onehot_violations', 0))}")
+            print(f"  C2 same-slot conflict violations: {int(soft_metrics.get('c2_conflict_violations', 0))}")
+            print(f"  C3 consecutive-slot violations: {int(soft_metrics.get('c3_consecutive_violations', 0))}")
+            print(f"  C4 slots over capacity: {int(soft_metrics.get('c4_slots_over_capacity', 0))}")
+            print(f"  Valid before repair: {'YES' if is_valid else 'NO'}")
 
             repair_info = {
                 'attempted': False,
@@ -1732,41 +2211,111 @@ def main():
                 'message': 'Repair not attempted.'
             }
 
-            # Optional local brute-force repair on violated subset, then merge
-            # into the partial solution from QUBO.
+            # Optional repair: independent slot expansion is final policy for large datasets.
+            # Exam-level brute-force fallback is skipped when slot expansion is enabled.
             if (not is_valid) and (not args.no_repair):
                 repair_info['attempted'] = True
-                print("\nAttempting local brute-force repair on violated subset...")
-                repair_result = repair_coloring_bruteforce(
-                    coloring=coloring,
-                    adjacency=adjacency,
-                    courses_df=courses_df,
-                    K=args.k,
-                    capacity=args.capacity,
-                    violation_details=violation_details,
-                    max_repair_exams=args.max_repair_exams,
-                    max_search_nodes=args.max_repair_nodes
-                )
+                if not args.no_slot_expansion:
+                    print("\nAttempting minimum-slot group repair (smaller QUBO + group brute-force)...")
+                    expansion_result = repair_coloring_slot_expansion(
+                        coloring=coloring,
+                        adjacency=adjacency,
+                        courses_df=courses_df,
+                        K=args.k,
+                        capacity=args.capacity,
+                        violation_details=violation_details,
+                        lambda1=args.lambda1,
+                        lambda2=args.lambda2,
+                        lambda3=args.lambda3,
+                        lambda4=args.lambda4,
+                        num_reads=args.slot_expansion_reads,
+                        max_repair_exams=args.max_repair_exams,
+                        max_local_k=args.max_expansion_k
+                    )
 
-                repair_info.update({
-                    'applied': bool(repair_result['success']),
-                    'message': str(repair_result['message']),
-                    'repaired_exam_count': int(repair_result.get('repaired_exam_count', 0)),
-                    'search_nodes': int(repair_result.get('search_nodes', 0))
-                })
+                    repair_info['slot_expansion'] = {
+                        'success': bool(expansion_result['success']),
+                        'message': str(expansion_result['message']),
+                        'repaired_exam_count': int(expansion_result.get('repaired_exam_count', 0)),
+                        'k_repair': int(expansion_result.get('k_repair', 0)),
+                        'new_slots_added': int(expansion_result.get('new_slots_added', 0)),
+                        'total_slots_final': int(expansion_result.get('total_slots', args.k)),
+                        'group_count': int(expansion_result.get('group_count', 0)),
+                        'placed_group_count': int(expansion_result.get('placed_group_count', 0)),
+                        'unplaced_group_count': int(expansion_result.get('unplaced_group_count', 0)),
+                        'group_bruteforce_nodes': int(expansion_result.get('group_bruteforce_nodes', 0)),
+                        'append_fallback_used': bool(expansion_result.get('append_fallback_used', False))
+                    }
+                    repair_info.update({
+                        'applied': bool(expansion_result['success']),
+                        'message': str(expansion_result['message']),
+                        'total_slots': int(expansion_result.get('total_slots', args.k))
+                    })
+                    print(f"Slot expansion status: {repair_info['slot_expansion']['message']}")
 
-                print(f"Repair status: {repair_info['message']}")
-
-                if repair_result['success']:
-                    coloring = repair_result['coloring']
-                    # Re-validate merged coloring. We skip raw solution C1 check
-                    # here because repaired coloring is no longer tied to the
-                    # original binary sample vector.
+                    # Combined schedule is final policy: always adopt expansion output.
+                    coloring = expansion_result['coloring']
+                    current_k = int(expansion_result.get('total_slots', current_k))
                     is_valid, num_conflicts, violations, soft_metrics, violation_details = validate_solution(
                         coloring, adjacency, num_courses,
-                        solution=None, K=args.k,
+                        solution=None, K=current_k,
                         courses_df=courses_df, capacity=args.capacity
                     )
+                    hard_ok_after_expansion = (
+                        int(soft_metrics.get('c1_onehot_violations', 0)) == 0
+                        and int(soft_metrics.get('c2_conflict_violations', 0)) == 0
+                        and int(soft_metrics.get('c3_consecutive_violations', 0)) == 0
+                        and int(soft_metrics.get('c4_slots_over_capacity', 0)) == 0
+                    )
+                    is_valid = bool(hard_ok_after_expansion)
+                    repair_info.update({
+                        'applied': bool(is_valid),
+                        'message': str(expansion_result['message'])
+                    })
+                    if not is_valid:
+                        print("Combined schedule kept as final by policy (exam-level brute-force skipped).")
+                else:
+                    # Optional legacy path when slot expansion is explicitly disabled.
+                    if not is_valid:
+                        print("\nAttempting local brute-force repair on violated subset...")
+                        repair_result = repair_coloring_bruteforce(
+                            coloring=coloring,
+                            adjacency=adjacency,
+                            courses_df=courses_df,
+                            K=current_k,
+                            capacity=args.capacity,
+                            violation_details=violation_details,
+                            max_repair_exams=args.max_repair_exams,
+                            max_search_nodes=args.max_repair_nodes
+                        )
+
+                        repair_info['bruteforce'] = {
+                            'success': bool(repair_result['success']),
+                            'message': str(repair_result['message']),
+                            'repaired_exam_count': int(repair_result.get('repaired_exam_count', 0)),
+                            'search_nodes': int(repair_result.get('search_nodes', 0))
+                        }
+                        repair_info.update({
+                            'applied': bool(repair_result['success']),
+                            'message': str(repair_result['message']),
+                            'repaired_exam_count': int(repair_result.get('repaired_exam_count', 0)),
+                            'search_nodes': int(repair_result.get('search_nodes', 0))
+                        })
+                        print(f"Brute-force repair status: {repair_info['bruteforce']['message']}")
+
+                        if repair_result['success']:
+                            coloring = repair_result['coloring']
+                            is_valid, num_conflicts, violations, soft_metrics, violation_details = validate_solution(
+                                coloring, adjacency, num_courses,
+                                solution=None, K=current_k,
+                                courses_df=courses_df, capacity=args.capacity
+                            )
+                            repair_info.update({
+                                'applied': bool(is_valid),
+                                'message': str(repair_result['message']),
+                                'repaired_exam_count': int(repair_result.get('repaired_exam_count', 0)),
+                                'search_nodes': int(repair_result.get('search_nodes', 0))
+                            })
 
             print(f"Runtime: {result['runtime']:.2f}s")
             print(f"Energy: {result['energy']:.2f}")
@@ -1793,7 +2342,7 @@ def main():
             print(f"C4 max overflow: {soft_metrics['c4_max_overflow']:.2f}")
             print(f"C4 total overflow: {soft_metrics['c4_total_overflow']:.2f}")
             print(f"Exams assigned: {len(coloring)}/{num_courses}")
-            print(f"Colors used: {len(set(coloring.values()))}/{args.k}")
+            print(f"Colors used: {len(set(coloring.values()))}/{current_k}")
 
             if args.input_csv:
                 selected_meta = metadata.get('selected_graph', {})
@@ -1861,13 +2410,13 @@ def main():
 
             # Generate timetable if valid
             if is_valid:
-                timetable = generate_timetable(coloring, courses_df, args.k)
+                timetable = generate_timetable(coloring, courses_df, current_k)
                 timetable.to_csv(output_dir / f'timetable_{backend_name}.csv', index=False)
                 print(f"\n✓ Saved timetable to: {output_dir}/timetable_{backend_name}.csv")
 
                 # Visualize timetable (if requested)
                 if args.visualize:
-                    visualize_timetable(coloring, adjacency, courses_df, args.k, output_dir)
+                    visualize_timetable(coloring, adjacency, courses_df, current_k, output_dir)
             else:
                 print(f"\n⚠ Solution invalid. First 3 conflicts:")
                 for v in violations[:3]:
@@ -1884,11 +2433,12 @@ def main():
         print(f"  - qubo_matrix.npy (QUBO)")
         print(f"  - *_results.json (solver outputs)")
         print(f"  - *_all_conflicts.json (all C1/C2/C3/C4 violations)")
-        if any(validate_solution(decode_solution(res['solution'], num_courses, args.k),
-                     adjacency, num_courses,
-                     solution=res['solution'], K=args.k,
-                 courses_df=courses_df, capacity=args.capacity)[0]
-               for res in results.values()):
+        if any(validate_solution(
+            decode_solution(res['solution'], num_courses, int(args.k)),
+            adjacency, num_courses,
+            solution=res['solution'], K=int(args.k),
+            courses_df=courses_df, capacity=args.capacity
+            )[0] for res in results.values()):
             print(f"  - timetable_*.csv (valid schedules)")
 
     if args.input_csv and args.adjacency_mode == 'both':

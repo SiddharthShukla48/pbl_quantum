@@ -1,0 +1,52 @@
+{
+  "backend": "neal",
+  "adjacency_mode": "all",
+  "is_valid": true,
+  "repair": {
+    "attempted": true,
+    "applied": true,
+    "message": "Group repair succeeded: k_repair=2, groups=2, placed_groups=2, appended_groups=0. Total: 18 (was 18), C3=2.",
+    "slot_expansion": {
+      "success": true,
+      "message": "Group repair succeeded: k_repair=2, groups=2, placed_groups=2, appended_groups=0. Total: 18 (was 18), C3=2.",
+      "repaired_exam_count": 5,
+      "k_repair": 2,
+      "new_slots_added": 0,
+      "total_slots_final": 18,
+      "group_count": 2,
+      "placed_group_count": 2,
+      "unplaced_group_count": 0,
+      "group_bruteforce_nodes": 13
+    },
+    "total_slots": 18
+  },
+  "summary": {
+    "c1_onehot_violations": 0,
+    "c2_conflict_violations": 0,
+    "c3_consecutive_violations": 2,
+    "c4_slots_over_capacity": 0,
+    "other_violations": 0
+  },
+  "violations": {
+    "c1": [],
+    "c2": [],
+    "c3": [
+      {
+        "exam_i": 42,
+        "exam_j": 45,
+        "year": 8,
+        "slot_i": 9,
+        "slot_j": 8
+      },
+      {
+        "exam_i": 42,
+        "exam_j": 46,
+        "year": 8,
+        "slot_i": 9,
+        "slot_j": 10
+      }
+    ],
+    "c4": [],
+    "other": []
+  }
+}

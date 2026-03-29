@@ -349,6 +349,9 @@ In CSV mode, student and enrollment counts come from the selected filtered graph
 --no-repair                Disable post-QUBO local brute-force repair
 --max-repair-exams INT     Max violated exams allowed in repair subset (default: 18)
 --max-repair-nodes INT     Max backtracking nodes during repair search (default: 200000)
+--no-slot-expansion        Disable smaller-QUBO group repair pipeline
+--slot-expansion-reads INT Neal reads for each smaller-QUBO k attempt (default: 2000)
+--max-expansion-k INT      Max k to test in smaller-QUBO sweep (0 uses full global K)
 
 --visualize                Save heatmap/graph/timetable PNGs
 ```
@@ -356,8 +359,21 @@ In CSV mode, student and enrollment counts come from the selected filtered graph
 Repair parameter behavior:
 
 - `--no-repair`: skips the repair phase entirely and reports raw QUBO decode/validation results.
-- `--max-repair-exams`: if the violated-exam subset size is greater than this value, repair is skipped for safety.
-- `--max-repair-nodes`: hard node-budget cutoff for backtracking; if reached, repair stops and the run keeps the original coloring.
+- `--no-slot-expansion`: disables the smaller-QUBO + grouped placement pipeline; legacy brute-force fallback path can still run.
+- `--slot-expansion-reads`: controls sampling strength for each repair-subproblem solve at each `k`.
+- `--max-expansion-k`: limits maximum local `k` tested while searching minimum repair grouping size.
+- `--max-repair-exams`: if violated subset size exceeds this value, repair is skipped for safety/runtime control.
+- `--max-repair-nodes`: only relevant for legacy brute-force path (primarily used when slot expansion is disabled).
+
+Current repair policy (default behavior):
+
+1. Solve full QUBO with input `--k`.
+2. If invalid, build fixed repair subset from violations (no repair-set expansion).
+3. Sweep smaller-QUBO on repair subset: `k = 1..k_max` until first feasible local solution.
+4. Build groups from local slot assignments.
+5. Place groups into frozen global slots with hard C2/C3/C4 checks.
+6. Append remaining groups into new disjoint slots with C3-safe appended placement.
+7. Use combined schedule as final policy output (exam-level brute-force fallback skipped when slot expansion is enabled).
 
 ---
 
@@ -423,6 +439,51 @@ python run_exam_scheduler.py \
   --num-reads 1000 \
   --lambda1 10000 --lambda2 5000 --lambda3 500 --lambda4 200 --capacity 120
 ```
+
+### 14.4 Final Policy Command (Recommended)
+
+```bash
+python run_exam_scheduler.py \
+  --input-csv "../Student Course (Jul-Nov 2025 and Winter 2025).csv" \
+  --k 18 \
+  --num-reads 500 \
+  --slot-expansion-reads 2000 \
+  --max-repair-exams 25
+```
+
+Explanation:
+
+- `--k 18`: base/global schedule slots for main QUBO.
+- `--num-reads 500`: quality/runtime balance for global solve.
+- `--slot-expansion-reads 2000`: stronger sampling for smaller-QUBO `k` sweep.
+- `--max-repair-exams 25`: keeps repair stage bounded on large datasets.
+
+### 14.5 Fast Iteration Command (Quick Debug)
+
+```bash
+python run_exam_scheduler.py \
+  --input-csv "../Student Course (Jul-Nov 2025 and Winter 2025).csv" \
+  --k 18 \
+  --num-reads 80 \
+  --slot-expansion-reads 300 \
+  --max-repair-exams 25
+```
+
+Use this profile when validating logic/prints quickly; for final-quality outputs, use higher reads.
+
+### 14.6 Legacy Brute-Force Mode (Optional)
+
+```bash
+python run_exam_scheduler.py \
+  --input-csv "../Student Course (Jul-Nov 2025 and Winter 2025).csv" \
+  --k 18 \
+  --num-reads 500 \
+  --no-slot-expansion \
+  --max-repair-exams 25 \
+  --max-repair-nodes 200000
+```
+
+This disables grouped smaller-QUBO repair and reverts to brute-force-oriented repair behavior.
 
 ---
 

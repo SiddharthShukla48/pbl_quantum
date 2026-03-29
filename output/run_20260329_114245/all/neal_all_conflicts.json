@@ -1,0 +1,157 @@
+{
+  "backend": "neal",
+  "adjacency_mode": "all",
+  "is_valid": false,
+  "repair": {
+    "attempted": true,
+    "applied": false,
+    "message": "Brute-force repair found no feasible C1/C2/C4 assignment (visited 1 nodes, limit=200000).",
+    "slot_expansion": {
+      "success": false,
+      "message": "Group repair failed global validation after merge; returning original coloring.",
+      "repaired_exam_count": 7,
+      "k_repair": 7,
+      "new_slots_added": 6,
+      "total_slots_final": 10,
+      "group_count": 7,
+      "placed_group_count": 1,
+      "unplaced_group_count": 6,
+      "group_bruteforce_nodes": 9
+    },
+    "total_slots": 10,
+    "bruteforce": {
+      "success": false,
+      "message": "Brute-force repair found no feasible C1/C2/C4 assignment (visited 1 nodes, limit=200000).",
+      "repaired_exam_count": 7,
+      "search_nodes": 1
+    },
+    "repaired_exam_count": 7,
+    "search_nodes": 1
+  },
+  "summary": {
+    "c1_onehot_violations": 6,
+    "c2_conflict_violations": 0,
+    "c3_consecutive_violations": 1,
+    "c4_slots_over_capacity": 0,
+    "other_violations": 1
+  },
+  "violations": {
+    "c1": [
+      {
+        "exam": 13,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "exam": 18,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "exam": 20,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "exam": 21,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "exam": 22,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "exam": 23,
+        "active_slots": 0,
+        "slot_values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "c2": [],
+    "c3": [
+      {
+        "exam_i": 7,
+        "exam_j": 9,
+        "year": 6,
+        "slot_i": 1,
+        "slot_j": 0
+      }
+    ],
+    "c4": [],
+    "other": [
+      {
+        "type": "incomplete_assignment",
+        "assigned_exams": 22,
+        "num_courses": 28,
+        "message": "Only 22/28 exams assigned"
+      }
+    ]
+  }
+}
