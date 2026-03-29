@@ -948,8 +948,8 @@ def build_repair_exam_set(violation_details, adjacency, courses_df=None):
     Policy:
     - C1: keep violated exam(s) directly.
     - C2/C3 pair violations: keep only ONE endpoint, preferring lower adjacency degree.
-    - C4 slot overflow: keep minimal exams from that slot until overflow is covered,
-      preferring lower adjacency degree (then lower enrollment).
+        - C4 slot overflow: keep only some exams from that slot until overflow is covered,
+            greedily removing higher-enrollment exams first.
     """
     repair_exams = set()
     n = adjacency.shape[0]
@@ -990,17 +990,18 @@ def build_repair_exam_set(violation_details, adjacency, courses_df=None):
         exam_j = int(item['exam_j'])
         repair_exams.add(pick_lower_adjacency(exam_i, exam_j))
 
-    # C4: pick minimal exams from each overflowed slot until overflow is covered.
+    # C4: greedily pick exams from each overflowed slot until overflow is covered.
+    # Priority: highest enrollment first (moves fewer exams), then lower adjacency.
     for item in violation_details.get('c4', []):
         overflow = float(item.get('overflow', 0.0))
         slot_exams = [int(exam) for exam in item.get('exams_in_slot', [])]
         if overflow <= 0.0 or not slot_exams:
             continue
 
-        # Lower adjacency first, then lower enrollment, then exam id.
+        # Highest enrollment first, then lower adjacency degree, then exam id.
         ordered = sorted(
             slot_exams,
-            key=lambda e: (float(degrees[e]), float(enrollments[e]), int(e))
+            key=lambda e: (-float(enrollments[e]), float(degrees[e]), int(e))
         )
 
         removed = 0.0
