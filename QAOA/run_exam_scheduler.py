@@ -1081,6 +1081,22 @@ def repair_coloring_slot_expansion(
         }
 
     repair_list = sorted(int(e) for e in repair_exams)
+
+    # Defensive guard: repair exam indices must map into global arrays.
+    invalid_repair_ids = [int(e) for e in repair_list if int(e) < 0 or int(e) >= int(n)]
+    if invalid_repair_ids:
+        return {
+            'success': False,
+            'coloring': dict(coloring),
+            'total_slots': int(K),
+            'message': (
+                f"Slot expansion aborted: invalid repair exam indices detected "
+                f"({invalid_repair_ids[:5]}{'...' if len(invalid_repair_ids) > 5 else ''})."
+            ),
+            'repaired_exam_count': int(len(repair_list)),
+            'k_repair': 0,
+            'new_slots_added': 0
+        }
     
     # ========== STEP 1: Solve smaller QUBO for repair set only ==========
     sub_adj = adjacency[np.ix_(repair_list, repair_list)]
@@ -1160,9 +1176,16 @@ def repair_coloring_slot_expansion(
                 continue
 
             # Validate internal repair problem only on repair subset.
+            # validate_solution on sub_adj expects exam indices in [0, len(repair_list)-1].
             temp_merged = {}
-            for li, local_slot in local_repair_dict.items():
-                temp_merged[int(li)] = int(local_slot)
+            for local_exam_idx, global_exam in enumerate(repair_list):
+                temp_merged[int(local_exam_idx)] = int(local_repair_dict[int(global_exam)])
+
+            # Defensive guard: local validate expects contiguous local exam ids.
+            if (len(temp_merged) != len(repair_list)) or any(
+                int(idx) < 0 or int(idx) >= len(repair_list) for idx in temp_merged.keys()
+            ):
+                continue
 
             onehot_checked += 1
             is_repair_valid, _, _, local_metrics, _ = validate_solution(
