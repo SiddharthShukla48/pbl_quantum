@@ -1787,7 +1787,7 @@ def generate_timetable(coloring, courses_df, K):
         schedule[slot].append({
             'exam_id': exam_id,
             'course_code': course['course_code'],
-            'year': course['year'],
+            'semester': course['year'],
             'enrollment': course['enrollment']
         })
     
@@ -1799,7 +1799,7 @@ def generate_timetable(coloring, courses_df, K):
         
         exams = sorted(schedule[slot], key=lambda x: x['course_code'])
         for exam in exams:
-            print(f"  {exam['course_code']:6s} | Year {exam['year']} | {exam['enrollment']} students")
+            print(f"  {exam['course_code']:6s} | Semester {exam['semester']} | {exam['enrollment']} students")
     
     # Create DataFrame
     timetable_rows = []
